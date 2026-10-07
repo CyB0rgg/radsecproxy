@@ -614,22 +614,24 @@ up their state early and not having to wait for a timeout (default on).
 
 .BI "CoAPort " port
 .RS
-UDP destination \fIport\fR used when sending reverse Change-of-Authorization (CoA) or
-Disconnect-Request packets to this client over UDP. Without this option, reverse CoA
-packets would be sent to the ephemeral source port of the last Access-Request from the
-NAS, which is almost never where the NAS listens for CoA. Default is 3799
-(per RFC 5176). Valid range is 1-65535. This option has no effect on TLS or DTLS clients,
-where reverse CoA is sent through the existing (D)TLS connection.
+UDP \fIport\fR on which this client listens for CoA-Request and Disconnect-Request
+packets (RFC 5176 Dynamic Authorization). Reverse CoA for a UDP client is sent to the
+client's address on this port with the client's secret, not to the source port of its
+last request. Default 3799. Valid range 1-65535. Ignored for TLS, DTLS and TCP clients,
+where reverse CoA travels on the existing connection.
 .RE
 
 .BI "reverseCoARealm " "realm [" " realm ...]"
 .RS
-Enables reverse Change-of-Authorization (CoA) routing through this TLS/DTLS client. Each
-\fIrealm\fR is either a literal string matched against the \fB1\fR-prefixed variant of the
-\fBOperator-Name\fR (RFC 5580 TLS-realm namespace) in an incoming reverse-CoA request, or
-a POSIX extended regular expression delimited by slashes, e.g. \fB/\e.example\e.(com|org)$/\fR.
-When set, this client becomes a candidate for receiving reverse-CoA packets whose
-\fBOperator-Name\fR matches. Ignored for UDP/TCP clients.
+Enables reverse Change-of-Authorization (CoA) routing through this client. Each
+\fIrealm\fR is either a literal string or a POSIX extended regular expression delimited
+by slashes, e.g. \fB/\e.example\e.(com|org)$/\fR, matched against the routing key taken
+from the \fBOperator-Name\fR (RFC 5580) of an incoming reverse-CoA request: for
+namespace \fB1\fR (REALM) the key is the realm after the namespace character, for any
+other namespace it is the whole value including the namespace character, for example
+\fB4IRONWIFI:US\fR for a WBAID. When set, this client becomes a candidate for receiving
+reverse-CoA packets whose key matches. Meant for TLS/DTLS clients that are themselves
+proxies (the next hop towards the NAS); use \fBNASidentifier\fR for the NAS itself.
 .RE
 
 .BI "NASidentifier " identifier
@@ -637,16 +639,34 @@ When set, this client becomes a candidate for receiving reverse-CoA packets whos
 NAS identity used to select this client as the final-hop destination of a reverse-CoA
 request. Compared against the RADIUS attributes \fBNAS-Identifier\fR (32), \fBOperator-NAS-Identifier\fR
 (sub-attribute 8 of attribute 241), \fBNAS-IP-Address\fR (4), and \fBNAS-IPv6-Address\fR (95)
-in the incoming reverse-CoA request. Ignored for UDP/TCP clients.
+in the incoming reverse-CoA request. A UDP client selected this way receives the request
+as RFC 5176 Dynamic Authorization on its \fBCoAPort\fR; a TLS/DTLS/TCP client receives
+it on its existing connection. Operator-Name and Operator-NAS-Identifier are removed
+from the packet delivered to the NAS (RFC 8559 section 4.2).
 .RE
 
 .BI "reverseCoATimeout " seconds
 .RS
 Per-request lifetime for pending reverse-CoA requests forwarded through this client,
 in seconds. Default 30, minimum 10, maximum 120. The minimum is enforced to ensure the
-timeout outlasts upstream retransmission cycles (RetryInterval × RetryCount). When the
+timeout outlasts upstream retransmission cycles (RetryInterval x RetryCount). When the
 timeout elapses without a response from the NAS, the request slot is reclaimed and any
 late response is silently discarded.
+.RE
+
+.BR "addOperatorNASIdentifier (" on | off )
+.RS
+Add an \fBOperator-NAS-Identifier\fR attribute (RFC 8559 section 3.4) naming this
+client connection to Access-Request and Accounting-Request packets received from this
+client before they are forwarded (default \fBoff\fR). The attribute is only added when
+the packet carries an \fBOperator-Name\fR and does not already carry an
+Operator-NAS-Identifier. A CoA-Request or Disconnect-Request that comes back with this
+attribute is routed to the same client connection first (session affinity), before the
+realm and NAS identity matching described under \fBreverseCoARealm\fR and
+\fBNASidentifier\fR; if that connection is gone, those two are tried. Enable this on
+the visited network's NAS-facing clients, together with \fBNASidentifier\fR or
+\fBCoAPort\fR. Operator-Name and Operator-NAS-Identifier are removed from the packet
+delivered to the NAS (RFC 8559 section 4.2).
 .RE
 
 .BR "AcceptCoA (" on | off )
@@ -1022,8 +1042,9 @@ Accounting-Request messages when a realm has no accountingServer configured.
 CoA-Request and Disconnect-Request messages (RFC 5176) are routed differently
 from Access-Requests and Accounting-Requests: instead of the realm part of the
 User-Name attribute, the realm is taken \fBonly\fR from the Operator-Name
-attribute (RFC 8559 section 3.2), using the "realm" (namespace \fB1\fR)
-Operator-Name-Format. User-Name is never consulted for this routing decision,
+attribute (RFC 8559 section 3.2): for namespace \fB1\fR (REALM) the realm after the
+namespace character, for any other namespace the whole value including the namespace
+character (for example \fB4IRONWIFI:US\fR). User-Name is never consulted for this routing decision,
 even when present. The realm match uses the same subject shape as a
 User-Name lookup (the extracted realm is matched as if it were the realm part
 of a "user@realm" identifier), so a plain (non-regex) realm block name matches
@@ -1036,6 +1057,17 @@ Routable).
 A CoA/Disconnect-Request from a client without \fBAcceptCoA\fR enabled is
 likewise answered with Error-Cause 502 rather than forwarded (see
 \fBAcceptCoA\fR in the \fBCLIENT BLOCK\fR section).
+
+A CoA/Disconnect-Request from a client with \fBAcceptCoA\fR whose Operator-Name
+matches no realm, or a realm without a usable \fBcoaServer\fR, is next offered to the
+reverse CoA routes: the client connection named by the request's
+Operator-NAS-Identifier (see \fBaddOperatorNASIdentifier\fR), a client with a matching
+\fBreverseCoARealm\fR, or a client matching the request's NAS identification attributes
+(see \fBNASidentifier\fR), in that order. The request then travels down that client's
+connection as described under \fBacceptReverseCoA\fR, and the CoA-ACK/NAK or
+Disconnect-ACK/NAK coming back answers the original request. This is how a home server
+behind this proxy reaches a NAS behind a visited-network proxy that connected inbound.
+Only when no reverse route exists either is the request answered with Error-Cause 502.
 
 Within the matched realm, if the request carries a NAS identification
 attribute (Operator-NAS-Identifier, NAS-Identifier, NAS-IP-Address or

@@ -22,15 +22,20 @@ char *extract_operator_realm(struct radmsg *msg, char *buf, size_t bufsize) {
 
     for (node = list_first(attrs); node; node = list_next(node)) {
         struct tlv *attr = node->data;
-        if (attr->l > 1 && attr->v[0] == '1') {
-            len = attr->l - 1;
-            if (len > (int)bufsize - 1)
-                len = (int)bufsize - 1;
-            memcpy(buf, attr->v + 1, len);
-            buf[len] = '\0';
-            result = buf;
-            break;
-        }
+        const uint8_t *start;
+        if (attr->l < 2)
+            continue;
+        /* namespace '1' (REALM, RFC 5580 section 4.1) carries a realm name and is
+           matched by that name; any other namespace is matched as the full value
+           including its namespace character, e.g. "4IRONWIFI:US" for a WBAID */
+        start = attr->v[0] == '1' ? attr->v + 1 : attr->v;
+        len = attr->l - (int)(start - attr->v);
+        if (len > (int)bufsize - 1)
+            len = (int)bufsize - 1;
+        memcpy(buf, start, len);
+        buf[len] = '\0';
+        result = buf;
+        break;
     }
     list_free(attrs);
     return result;

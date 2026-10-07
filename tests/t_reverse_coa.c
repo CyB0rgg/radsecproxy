@@ -3,6 +3,7 @@
 
 #include "../radmsg.h"
 #include "../radsecproxy.h"
+#include "../reverse_coa.h"
 #include <arpa/inet.h>
 #include <openssl/evp.h>
 #include <openssl/md5.h>
@@ -248,7 +249,7 @@ int main(int argc, char *argv[]) {
         test_ok(radmsg_validate_response_auth(pkt, 20, secret, secret_len, req_auth) == 1,
                 "validate_response_auth: minimal 20-byte packet passes again");
 
-        /* test: len > 20 path — 26-byte packet with a 6-byte Proxy-State attribute */
+        /* test: len > 20 path - 26-byte packet with a 6-byte Proxy-State attribute */
         {
             uint8_t pkt26[26];
             pkt26[0] = 44; /* CoA-ACK */
@@ -279,7 +280,7 @@ int main(int argc, char *argv[]) {
                     "validate_response_auth: 26-byte packet with Proxy-State attribute passes");
         }
 
-        /* test: padded buffer — declared_len < buflen. caller supplies len=20 from header;
+        /* test: padded buffer - declared_len < buflen. caller supplies len=20 from header;
            function must use that, not the buffer size. */
         {
             uint8_t pkt_pad[30];
@@ -289,7 +290,7 @@ int main(int argc, char *argv[]) {
             pkt_pad[2] = 0;
             pkt_pad[3] = 20; /* declared length = 20, no attributes */
             memset(pkt_pad + 4, 0, 16);
-            /* bytes 20-29 are noise — must not be included in hash */
+            /* bytes 20-29 are noise - must not be included in hash */
             memset(pkt_pad + 20, 0xff, 10);
 
             EVP_MD_CTX *ctx_pad = EVP_MD_CTX_new();
@@ -314,7 +315,7 @@ int main(int argc, char *argv[]) {
     {
         const uint8_t secret[] = "testing123";
         const int secret_len = 10;
-        /* sentauth is what send_coa_to_client stores in rqout->sentauth — the
+        /* sentauth is what send_coa_to_client stores in rqout->sentauth - the
            response authenticator of the outgoing CoA request, i.e. the 16
            bytes that the NAS should echo back in its response auth field */
         const uint8_t sentauth[16] = {
@@ -366,7 +367,7 @@ int main(int argc, char *argv[]) {
 
         /* slot 7 has a pending rqout with known sentauth */
         /* stack-scaffolded request, never allocated via newrequest().
-           do not pass to freerq/clear_rqout — the test only stores the pointer as a
+           do not pass to freerq/clear_rqout - the test only stores the pointer as a
            sentinel that the slot is occupied. */
         struct request dummy_rq;
         memset(&dummy_rq, 0, sizeof(dummy_rq));
@@ -415,7 +416,7 @@ int main(int argc, char *argv[]) {
             &conf, 99, (struct sockaddr *)&coa_src, pkt, 20);
         test_ok(result == NULL, "find_rcoa_client: wrong sock returns NULL");
 
-        /* test 6: len > 20 packet with attribute — exercises the _validauth
+        /* test 6: len > 20 packet with attribute - exercises the _validauth
            attribute-bytes hashing path end-to-end */
         {
             uint8_t my_sentauth[16] = {
@@ -471,6 +472,76 @@ int main(int argc, char *argv[]) {
         free(cli->reverse_coa_rqs);
         free(cli);
         pthread_mutex_destroy(&conf_lock);
+    }
+
+    /* test: operator-nas-identifier token helpers */
+    {
+        char token[64];
+        uint32_t serial = 0;
+        struct tlv *attr;
+        int n;
+
+        init_reverse_coa();
+        n = reverse_coa_oni_format(42, token, sizeof(token));
+        test_eq(22, n, "oni_format: token length");
+        test_ok(!strncmp(token, "rsp1:", 5), "oni_format: token prefix");
+
+        attr = makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, n, token);
+        test_ok(attr && attr->l == 23 && attr->v[0] == RAD_Extended_Operator_NAS_Id, "oni token as attribute 241.8");
+        test_ok(reverse_coa_oni_parse(attr, &serial) && serial == 42, "oni_parse: own token round-trips the serial");
+        freetlv(attr);
+
+        attr = makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, 22, (void *)"xsp1:00000000:0000002a");
+        test_ok(!reverse_coa_oni_parse(attr, &serial), "oni_parse: foreign token rejected");
+        freetlv(attr);
+
+        attr = makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, 9, (void *)"nas-1.lab");
+        test_ok(!reverse_coa_oni_parse(attr, &serial), "oni_parse: another operator's identifier rejected");
+        freetlv(attr);
+
+        test_ok(!reverse_coa_oni_parse(NULL, &serial), "oni_parse: missing attribute rejected");
+    }
+
+    /* test: add_operator_nas_identifier and strip_operator_attrs (rfc 8559 sections 3.4, 4.2) */
+    {
+        struct clsrvconf conf;
+        struct client cli;
+        struct radmsg *msg;
+        struct tlv *attr;
+        struct list *ext;
+        uint32_t serial = 0;
+        uint32_t code = 0;
+        uint8_t auth[16] = {0};
+        char name[] = "nas-client";
+
+        memset(&conf, 0, sizeof(conf));
+        memset(&cli, 0, sizeof(cli));
+        conf.name = name;
+        cli.conf = &conf;
+        cli.serial = 7;
+
+        msg = radmsg_init(RAD_Access_Request, 1, auth);
+        radmsg_add(msg, maketlv(RAD_Attr_User_Name, 8, (void *)"user@abc"), 0);
+        radmsg_add(msg, makeexttlv(RAD_ExtAttr_Original_Packet_Code, 4, &code), 0);
+        test_ok(add_operator_nas_identifier(&cli, msg) == 1, "add_oni: ok without operator-name");
+        test_ok(radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier) == NULL, "add_oni: nothing added without operator-name");
+
+        radmsg_add(msg, maketlv(RAD_Attr_Operator_Name, 12, (void *)"4IRONWIFI:US"), 0);
+        test_ok(add_operator_nas_identifier(&cli, msg) == 1, "add_oni: added next to operator-name");
+        attr = radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier);
+        test_ok(attr && reverse_coa_oni_parse(attr, &serial) && serial == 7, "add_oni: token names the client connection");
+
+        test_ok(add_operator_nas_identifier(&cli, msg) == 1, "add_oni: second call ok");
+        ext = radmsg_getalltype(msg, RAD_Attr_Extended_Type_1);
+        test_eq(2, ext ? (int)list_count(ext) : 0, "add_oni: never a second operator-nas-identifier");
+        list_free(ext);
+
+        strip_operator_attrs(msg);
+        test_ok(radmsg_gettype(msg, RAD_Attr_Operator_Name) == NULL, "strip: operator-name removed");
+        test_ok(radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier) == NULL, "strip: operator-nas-identifier removed");
+        test_ok(radmsg_getexttype(msg, RAD_ExtAttr_Original_Packet_Code) != NULL, "strip: other extended attributes kept");
+        test_ok(radmsg_gettype(msg, RAD_Attr_User_Name) != NULL, "strip: other attributes kept");
+        radmsg_free(msg);
     }
 
     printf("1..%d\n", numtests);

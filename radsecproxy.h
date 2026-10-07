@@ -135,6 +135,7 @@ struct request {
     uint8_t newid;
     int udpsock;                          /* only for UDP */
     struct sockaddr_storage *to_override; /* reverse coa udp dest override, replaces from->addr for port fix-up */
+    struct request *origin;               /* client request a reverse coa response answers */
 };
 
 /* requests that our client will send */
@@ -208,6 +209,7 @@ struct clsrvconf {
     long reverse_coa_timeout;
     uint16_t coaport; /* reverse coa destination port for udp clients, default 3799 */
     uint8_t accept_coa;
+    uint8_t add_operator_nas_id;
 };
 
 #include "tlscommon.h"
@@ -235,6 +237,7 @@ struct client {
     struct rqout *reverse_coa_rqs;
     uint8_t reverse_coa_nextid;
     struct reverse_coa_route *reverse_coa_route;
+    uint32_t serial; /* names this connection in Operator-NAS-Identifier */
 };
 
 struct server {

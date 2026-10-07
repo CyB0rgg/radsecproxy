@@ -5,6 +5,7 @@
 
 #if defined(RADPROT_TLS) || defined(RADPROT_DTLS)
 
+#include "coa.h"
 #include "debug.h"
 #include "hash.h"
 #include "list.h"
@@ -12,6 +13,7 @@
 #include "util.h"
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <openssl/rand.h>
 #include <pthread.h>
 #include <regex.h>
 #include <stdlib.h>
@@ -68,6 +70,7 @@ static struct hash *realm_reverse_coa_clients;
 static struct list *realm_reverse_coa_regex_list;
 static struct list *reverse_coa_nas_routes;
 static pthread_mutex_t realm_reverse_coa_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t oni_nonce;
 
 /* dumps up to 16 bytes per line as hex+offset so the log can be
    pasted into wireshark "import from hex dump" (encap: radius) for decoding */
@@ -101,6 +104,8 @@ static void debug_dump_attrs(const char *tag, struct radmsg *msg) {
 }
 
 void init_reverse_coa(void) {
+    if (!RAND_bytes((unsigned char *)&oni_nonce, sizeof(oni_nonce)))
+        debugx(1, DBG_ERR, "init_reverse_coa: RAND_bytes failed");
     realm_reverse_coa_clients = hash_create();
     if (!realm_reverse_coa_clients)
         debugx(1, DBG_ERR, "malloc failed");
@@ -390,7 +395,7 @@ static int is_coa_duplicate(struct server *server, struct radmsg *msg) {
 
     if (memcmp(slot->auth, msg->auth, 16) != 0) {
         /* different auth means this is a new request reusing the id,
-           not a retransmission — caller (record_coa_dedup) will overwrite the slot */
+           not a retransmission - caller (record_coa_dedup) will overwrite the slot */
         pthread_mutex_unlock(&server->reverse_coa_lock);
         return 0;
     }
@@ -538,6 +543,83 @@ static int match_nas_identifier(struct client *client, struct radmsg *msg) {
     return 0;
 }
 
+/* Operator-NAS-Identifier (RFC 8559 section 3.4) naming one of our client
+   connections: an opaque token carrying a per-process nonce and the client
+   serial. The nonce keeps a token from a previous run from selecting an
+   unrelated connection. */
+#define ONI_PREFIX "rsp1:"
+#define ONI_LEN (sizeof(ONI_PREFIX) - 1 + 8 + 1 + 8)
+
+int reverse_coa_oni_format(uint32_t serial, char *buf, size_t bufsize) {
+    int n = snprintf(buf, bufsize, ONI_PREFIX "%08x:%08x", oni_nonce, serial);
+    return n == (int)ONI_LEN && (size_t)n < bufsize ? n : 0;
+}
+
+int reverse_coa_oni_parse(const struct tlv *attr, uint32_t *serial) {
+    char buf[ONI_LEN + 1];
+    unsigned int nonce, ser;
+
+    if (!attr || attr->t != RAD_Attr_Extended_Type_1 || attr->l != ONI_LEN + 1 || attr->v[0] != RAD_Extended_Operator_NAS_Id)
+        return 0;
+    memcpy(buf, attr->v + 1, ONI_LEN);
+    buf[ONI_LEN] = '\0';
+    if (sscanf(buf, ONI_PREFIX "%8x:%8x", &nonce, &ser) != 2 || nonce != oni_nonce)
+        return 0;
+    *serial = ser;
+    return 1;
+}
+
+/* RFC 8559 section 3.4: added by the visited network to Access-Request and
+   Accounting-Request only, at most once, and only next to an Operator-Name */
+int add_operator_nas_identifier(struct client *from, struct radmsg *msg) {
+    char token[ONI_LEN + 1];
+    struct tlv *attr;
+    int len;
+
+    if (!radmsg_gettype(msg, RAD_Attr_Operator_Name)) {
+        debug(DBG_DBG, "add_operator_nas_identifier: no operator-name in %s (id %d) from %s, not adding operator-nas-identifier",
+              radmsgtype2string(msg->code), msg->id, from->conf->name);
+        return 1;
+    }
+    if (radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier)) {
+        debug(DBG_DBG, "add_operator_nas_identifier: %s (id %d) from %s already carries an operator-nas-identifier, leaving it",
+              radmsgtype2string(msg->code), msg->id, from->conf->name);
+        return 1;
+    }
+    len = reverse_coa_oni_format(from->serial, token, sizeof(token));
+    if (!len)
+        return 0;
+    attr = makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, len, token);
+    if (!attr || !radmsg_add(msg, attr, 0)) {
+        freetlv(attr);
+        return 0;
+    }
+    debug(DBG_DBG, "add_operator_nas_identifier: added %s to %s (id %d) from client %s", token,
+          radmsgtype2string(msg->code), msg->id, from->conf->name);
+    return 1;
+}
+
+/* RFC 8559 section 4.2: the visited network removes Operator-Name and
+   Operator-NAS-Identifier before the packet reaches the NAS */
+void strip_operator_attrs(struct radmsg *msg) {
+    struct list_node *n, *p = NULL;
+    struct tlv *attr;
+
+    n = list_first(msg->attrs);
+    while (n) {
+        attr = (struct tlv *)n->data;
+        if (attr->t == RAD_Attr_Operator_Name ||
+            (attr->t == RAD_Attr_Extended_Type_1 && attr->l > 0 && attr->v[0] == RAD_Extended_Operator_NAS_Id)) {
+            list_removedata(msg->attrs, attr);
+            freetlv(attr);
+            n = p ? list_next(p) : list_first(msg->attrs);
+        } else {
+            p = n;
+            n = list_next(n);
+        }
+    }
+}
+
 static void expire_reverse_coa_rqs(struct client *client) {
     struct timeval now;
     int i, cleaned = 0;
@@ -618,7 +700,7 @@ static int send_reverse_coa_nak(struct server *server, struct radmsg *req, uint3
     return 1;
 }
 
-static int send_coa_to_client(struct server *from_server, struct client *to_client, struct radmsg *msg) {
+static int send_coa_to_client(struct server *from_server, struct request *origin, struct client *to_client, struct radmsg *msg, int final_hop) {
     struct request *rq;
     struct rqout *rqout;
     struct radmsg *copy;
@@ -637,6 +719,8 @@ static int send_coa_to_client(struct server *from_server, struct client *to_clie
         debug(DBG_ERR, "send_coa_to_client: radmsg_dup failed");
         return 0;
     }
+    if (final_hop)
+        strip_operator_attrs(copy);
 
     rq = newrequest();
     if (!rq) {
@@ -667,6 +751,7 @@ static int send_coa_to_client(struct server *from_server, struct client *to_clie
     rq->rqid = msg->id;
     memcpy(rq->rqauth, msg->auth, 16);
     rq->to = from_server;
+    rq->origin = origin ? newrqref(origin) : NULL;
     rq->from = to_client;
     rq->udpsock = to_client->sock;
     rq->newid = newid;
@@ -718,7 +803,7 @@ static int send_coa_to_client(struct server *from_server, struct client *to_clie
     return 1;
 }
 
-static int try_send_to_realm_clients(struct server *server, const char *realm, struct radmsg *msg) {
+static int try_send_to_realm_clients(struct server *server, struct request *origin, const char *realm, struct radmsg *msg) {
     struct reverse_coa_route *candidates[MAX_REVERSE_COA_FAILOVER];
     int count = 0;
     int preferred_idx = -1;
@@ -770,7 +855,8 @@ static int try_send_to_realm_clients(struct server *server, const char *realm, s
         debug(DBG_DBG, "try_send_to_realm_clients: trying %s client %s for realm %s",
               (preferred_idx >= 0) ? "preferred" : "first",
               candidates[start]->target->conf->name, realm);
-        sent = send_coa_to_client(server, candidates[start]->target, msg);
+        sent = send_coa_to_client(server, origin, candidates[start]->target, msg,
+                                  preferred_idx >= 0 || candidates[start]->target->conf->type == RAD_UDP);
     }
     pthread_mutex_unlock(&candidates[start]->refmutex);
 
@@ -782,7 +868,7 @@ static int try_send_to_realm_clients(struct server *server, const char *realm, s
             if (candidates[i]->target) {
                 debug(DBG_DBG, "try_send_to_realm_clients: trying alternate client %s (previous send failed locally) for realm %s",
                       candidates[i]->target->conf->name, realm);
-                sent = send_coa_to_client(server, candidates[i]->target, msg);
+                sent = send_coa_to_client(server, origin, candidates[i]->target, msg, candidates[i]->target->conf->type == RAD_UDP);
                 if (sent)
                     debug(DBG_INFO, "try_send_to_realm_clients: send to alternate client %s succeeded",
                           candidates[i]->target->conf->name);
@@ -835,32 +921,46 @@ static void cache_coa_dedup_reply(struct server *server, uint8_t id, uint8_t *au
     pthread_mutex_unlock(&server->reverse_coa_lock);
 }
 
-static char *extract_operator_realm(struct radmsg *msg, char *buf, size_t bufsize) {
-    struct list *attrs = radmsg_getalltype(msg, RAD_Attr_Operator_Name);
-    if (!attrs)
-        return NULL;
-
-    char *result = NULL;
+/* stage 0: the connection this proxy named in Operator-NAS-Identifier when it
+   forwarded the session's Access-Request (RFC 8559 section 3.4) */
+static int try_send_to_affine_client(struct server *server, struct request *origin, struct radmsg *msg) {
+    struct reverse_coa_route *route = NULL;
     struct list_node *node;
-    for (node = list_first(attrs); node; node = list_next(node)) {
-        struct tlv *attr = (struct tlv *)node->data;
-        if (attr->l > 1 && attr->v[0] == '1') {
-            int len = attr->l - 1;
-            if (len > (int)bufsize - 1)
-                len = bufsize - 1;
-            memcpy(buf, attr->v + 1, len);
-            buf[len] = '\0';
-            result = buf;
-            break;
-        }
+    uint32_t serial;
+    int sent = 0;
+
+    if (!reverse_coa_oni_parse(radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier), &serial))
+        return 0;
+
+    pthread_mutex_lock(&realm_reverse_coa_lock);
+    for (node = list_first(reverse_coa_nas_routes); node && !route; node = list_next(node)) {
+        struct reverse_coa_route *candidate = (struct reverse_coa_route *)node->data;
+        pthread_mutex_lock(&candidate->refmutex);
+        if (candidate->target && candidate->target->serial == serial)
+            route = candidate;
+        pthread_mutex_unlock(&candidate->refmutex);
     }
-    if (!result)
-        debug(DBG_DBG, "extract_operator_realm: no '1'-prefixed Operator-Name variant found (rfc 5580 tls realm)");
-    list_free(attrs);
-    return result;
+    if (route)
+        reverse_coa_route_ref(route);
+    pthread_mutex_unlock(&realm_reverse_coa_lock);
+
+    if (!route) {
+        debug(DBG_INFO, "try_send_to_affine_client: operator-nas-identifier names connection %u which is gone, trying realm and nas identity", serial);
+        return 0;
+    }
+
+    pthread_mutex_lock(&route->refmutex);
+    if (route->target) {
+        debug(DBG_DBG, "try_send_to_affine_client: operator-nas-identifier matched client %s (connection %u)",
+              route->target->conf->name, serial);
+        sent = send_coa_to_client(server, origin, route->target, msg, 1);
+    }
+    pthread_mutex_unlock(&route->refmutex);
+    reverse_coa_route_deref(route);
+    return sent;
 }
 
-static int try_send_to_nas_client(struct server *server, struct radmsg *msg) {
+static int try_send_to_nas_client(struct server *server, struct request *origin, struct radmsg *msg) {
     struct reverse_coa_route *candidates[MAX_REVERSE_COA_FAILOVER];
     int count = 0;
     int sent = 0;
@@ -881,7 +981,7 @@ static int try_send_to_nas_client(struct server *server, struct radmsg *msg) {
         if (candidates[i]->target && match_nas_identifier(candidates[i]->target, msg)) {
             debug(DBG_DBG, "try_send_to_nas_client: trying client %s",
                   candidates[i]->target->conf->name);
-            sent = send_coa_to_client(server, candidates[i]->target, msg);
+            sent = send_coa_to_client(server, origin, candidates[i]->target, msg, 1);
         }
         pthread_mutex_unlock(&candidates[i]->refmutex);
     }
@@ -894,35 +994,58 @@ static int try_send_to_nas_client(struct server *server, struct radmsg *msg) {
     return sent;
 }
 
-static void route_reverse_coa(struct server *server, struct radmsg *msg) {
+static int dispatch_reverse_coa(struct server *server, struct request *origin, struct radmsg *msg) {
     char realm_buf[256];
     char *realm = extract_operator_realm(msg, realm_buf, sizeof(realm_buf));
 
-    debug(DBG_DBG, "route_reverse_coa: looking for client for realm %s", realm ? realm : "(none)");
+    debug(DBG_DBG, "dispatch_reverse_coa: looking for client for realm %s", realm ? realm : "(none)");
 
-    /* two-stage routing per RFC draft-ietf-radext-reverse-coa-08 section 6:
-       stage 1 - realm-based (intermediate proxy), stage 2 - NAS-identity (final proxy) */
-    if ((realm && try_send_to_realm_clients(server, realm, msg)) ||
-        try_send_to_nas_client(server, msg)) {
-        record_coa_dedup(server, msg->id, msg->auth);
+    /* stage 0: the connection named in Operator-NAS-Identifier, then the two
+       stages of draft-ietf-radext-reverse-coa section 6: stage 1 - realm-based
+       (intermediate proxy), stage 2 - NAS-identity (final proxy) */
+    if (try_send_to_affine_client(server, origin, msg))
+        return 1;
+    if (realm && try_send_to_realm_clients(server, origin, realm, msg))
+        return 1;
+    if (try_send_to_nas_client(server, origin, msg))
+        return 1;
+
+    if (realm)
+        debug(DBG_WARN, "dispatch_reverse_coa: no route for realm %s", realm);
+    else
+        debug(DBG_WARN, "dispatch_reverse_coa: no operator-name and no NAS identity match");
+    return 0;
+}
+
+static void route_reverse_coa(struct server *server, struct radmsg *msg) {
+    uint8_t *nakbuf = NULL;
+    int naklen = 0;
+
+    record_coa_dedup(server, msg->id, msg->auth);
+    if (dispatch_reverse_coa(server, NULL, msg)) {
         radmsg_free(msg);
         return;
     }
 
-    if (realm)
-        debug(DBG_WARN, "route_reverse_coa: no route for realm %s", realm);
-    else
-        debug(DBG_WARN, "route_reverse_coa: no operator-name and no NAS identity match");
-
-    uint8_t *nakbuf = NULL;
-    int naklen = 0;
-    record_coa_dedup(server, msg->id, msg->auth);
     (void)send_reverse_coa_nak(server, msg, RAD_Err_Request_Not_Routable, &nakbuf, &naklen);
     if (nakbuf) {
         cache_coa_dedup_reply(server, msg->id, msg->auth, nakbuf, naklen);
         free(nakbuf);
     }
     radmsg_free(msg);
+}
+
+/* a CoA/Disconnect-Request received from a client (acceptCoA) that no coaServer
+   takes: offer it to the reverse coa routes; the response comes back through
+   forward_coa_response() and answers rq. 1 if dispatched, 0 if no route. */
+int route_reverse_coa_from_client(struct request *rq) {
+    if (!rq || !rq->msg || !rq->from)
+        return 0;
+    if (!dispatch_reverse_coa(NULL, rq, rq->msg))
+        return 0;
+    debug(DBG_INFO, "route_reverse_coa_from_client: %s (id %d) from client %s sent down a reverse coa route",
+          radmsgtype2string(rq->msg->code), rq->msg->id, rq->from->conf->name);
+    return 1;
 }
 
 static void handle_reverse_coa_request(struct server *server, uint8_t *buf, int len) {
@@ -994,6 +1117,36 @@ int forward_coa_response(struct client *from, struct radmsg *msg) {
     gettimeofday(&now, NULL);
     if (rqout->expiry.tv_sec > 0 && now.tv_sec > rqout->expiry.tv_sec) {
         debug(DBG_INFO, "forward_coa_response: request id %d expired, discarding response", msg->id);
+        goto cleanup;
+    }
+
+    if (rqout->rq->origin) {
+        struct request *origin = rqout->rq->origin;
+        struct radmsg *reply;
+
+        rqout->rq->origin = NULL;
+        if (!origin->from) {
+            debug(DBG_INFO, "forward_coa_response: client that sent request id %d is gone, dropping %s",
+                  origin->rqid, radmsgtype2string(msg->code));
+            freerq(origin);
+            goto cleanup;
+        }
+        reply = radmsg_dup(msg);
+        if (!reply) {
+            debug(DBG_ERR, "forward_coa_response: radmsg_dup failed");
+            freerq(origin);
+            goto cleanup;
+        }
+        reply->id = origin->rqid;
+        memcpy(reply->auth, origin->rqauth, 16);
+        debug(DBG_DBG, "forward_coa_response: answering request id %d from client %s with %s",
+              origin->rqid, origin->from->conf->name, radmsgtype2string(reply->code));
+        radmsg_free(origin->msg);
+        origin->msg = reply;
+        /* sendreply takes over the reference held by the tracking request */
+        if (sendreply(origin) < 1)
+            debug(DBG_ERR, "forward_coa_response: answering request id %d failed", origin->rqid);
+        ret = 1;
         goto cleanup;
     }
 

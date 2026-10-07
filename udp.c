@@ -139,7 +139,7 @@ static int addr_equal(struct sockaddr *a, struct sockaddr *b) {
 
 /* caller holds p->lock. c->reverse_coa_rqs and c->addr are
    set once inside addclient() under p->lock and freed once in
-   removelockedclient() under p->lock — both are stable for the duration
+   removelockedclient() under p->lock - both are stable for the duration
    of this walk. c->lock is taken briefly only to read the rqs[id] slot,
    which can be mutated concurrently by send_coa_to_client and
    forward_coa_response. returns the matched client or NULL. */

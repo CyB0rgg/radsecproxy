@@ -158,8 +158,10 @@ client 127.0.0.1 {
 #	rewriteIn example
 #	Can also do rewriting of outgoing messages
 #	rewriteOut example
-#	Destination port for reverse CoA sent to this UDP client (default 3799, per RFC 5176)
+#	Port on which this NAS listens for CoA/Disconnect-Request (default 3799, per RFC 5176)
 #	CoAPort 3799
+#	Name this NAS in Operator-NAS-Identifier and route CoA for its sessions back here
+#	addOperatorNASIdentifier on
 }
 client 127.0.0.1 {
 	type	tcp
@@ -172,6 +174,7 @@ client radius.example.com {
 	#reverseCoARealm example.org
 	#NASidentifier my-nas-1
 	#reverseCoATimeout 30
+	#addOperatorNASIdentifier on
 }
 client radius.example.com {
 	type dtls

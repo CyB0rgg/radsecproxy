@@ -19,6 +19,11 @@ int try_handle_reverse_coa_request(struct server *server, unsigned char *buf, in
 void drain_coa_dedup(struct server *server);
 struct reverse_coa_route *reverse_coa_route_new(struct client *target);
 void reverse_coa_route_deref(struct reverse_coa_route *route);
+int route_reverse_coa_from_client(struct request *rq);
+int add_operator_nas_identifier(struct client *from, struct radmsg *msg);
+int reverse_coa_oni_format(uint32_t serial, char *buf, size_t bufsize);
+int reverse_coa_oni_parse(const struct tlv *attr, uint32_t *serial);
+void strip_operator_attrs(struct radmsg *msg);
 
 #else
 
@@ -54,6 +59,27 @@ static inline struct reverse_coa_route *reverse_coa_route_new(struct client *tar
     return NULL;
 }
 static inline void reverse_coa_route_deref(struct reverse_coa_route *route) { (void)route; }
+static inline int route_reverse_coa_from_client(struct request *rq) {
+    (void)rq;
+    return 0;
+}
+static inline int add_operator_nas_identifier(struct client *from, struct radmsg *msg) {
+    (void)from;
+    (void)msg;
+    return 1;
+}
+static inline int reverse_coa_oni_format(uint32_t serial, char *buf, size_t bufsize) {
+    (void)serial;
+    (void)buf;
+    (void)bufsize;
+    return 0;
+}
+static inline int reverse_coa_oni_parse(const struct tlv *attr, uint32_t *serial) {
+    (void)attr;
+    (void)serial;
+    return 0;
+}
+static inline void strip_operator_attrs(struct radmsg *msg) { (void)msg; }
 
 #endif
 

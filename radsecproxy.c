@@ -197,6 +197,17 @@ void removequeue(struct gqueue *q) {
     free(q);
 }
 
+static uint32_t nextclientserial(void) {
+    static uint32_t serial = 0;
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    uint32_t s;
+
+    pthread_mutex_lock(&lock);
+    s = ++serial;
+    pthread_mutex_unlock(&lock);
+    return s;
+}
+
 struct client *addclient(struct clsrvconf *conf, int sock,
                          const struct sockaddr *from, uint8_t lock) {
     struct client *new = NULL;
@@ -222,6 +233,7 @@ struct client *addclient(struct clsrvconf *conf, int sock,
 
     new->conf = conf;
     new->sock = sock;
+    new->serial = nextclientserial();
     /* set addr before register_reverse_coa_client so any concurrent
        lookup that finds the new client via realm_reverse_coa_lock never dereferences
        a NULL addr */
@@ -238,7 +250,7 @@ struct client *addclient(struct clsrvconf *conf, int sock,
     else
         new->replyq = newqueue();
     pthread_mutex_init(&new->lock, NULL);
-    if (conf->reverse_coa_realms || conf->nas_identifier) {
+    if (conf->reverse_coa_realms || conf->nas_identifier || conf->add_operator_nas_id) {
         new->reverse_coa_rqs = calloc(MAX_REQUESTS, sizeof(struct rqout));
         if (!new->reverse_coa_rqs) {
             debug(DBG_ERR, "malloc failed for reverse_coa_rqs");
@@ -499,6 +511,8 @@ void freerq(struct request *rq) {
         radmsg_free(rq->msg);
     if (rq->to_override)
         free(rq->to_override);
+    if (rq->origin)
+        freerq(rq->origin);
     pthread_mutex_destroy(&rq->refmutex);
     free(rq);
 }
@@ -1480,6 +1494,8 @@ int radsrv(struct request *rq) {
 
         to = findcoaserver(realms, &realm, msg, &nasmismatch);
         if (!to) {
+            if (!nasmismatch && route_reverse_coa_from_client(rq))
+                goto exit;
             if (!realm)
                 debug_limit(DBG_INFO, "radsrv: %s (id %d) from %s (%s), no operator-name realm route",
                             radmsgtype2string(msg->code), msg->id, from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
@@ -1604,6 +1620,12 @@ int radsrv(struct request *rq) {
             debug(DBG_WARN, "radsrv: rewrite malloc failed, ignoring request");
             goto rmclrqexit;
         }
+    }
+
+    if (from->conf->add_operator_nas_id && (msg->code == RAD_Access_Request || msg->code == RAD_Accounting_Request) &&
+        !add_operator_nas_identifier(from, msg)) {
+        debug(DBG_WARN, "radsrv: adding operator-nas-identifier failed, ignoring request");
+        goto rmclrqexit;
     }
 
     if (msg->code == RAD_Access_Request &&
@@ -3031,6 +3053,7 @@ int confclient_cb(struct gconffile **cf, void *arg, char *block, char *opt, char
             "requireMessageAuthenticatorProxy", CONF_BLN, &conf->reqmsgauthproxy,
             "ProtocolError", CONF_BLN, &conf->protocolerror,
             "acceptCoA", CONF_BLN, &conf->accept_coa,
+            "addOperatorNASIdentifier", CONF_BLN, &conf->add_operator_nas_id,
             NULL))
         debugx(1, DBG_ERR, "configuration error");
 
@@ -3076,7 +3099,7 @@ int confclient_cb(struct gconffile **cf, void *arg, char *block, char *opt, char
     }
 
 #if defined(RADPROT_TLS) || defined(RADPROT_DTLS)
-    if (conf->reverse_coa_realms || conf->nas_identifier) {
+    if (conf->reverse_coa_realms || conf->nas_identifier || conf->add_operator_nas_id) {
         if (conf->reverse_coa_timeout == 0)
             conf->reverse_coa_timeout = 30;
         else if (conf->reverse_coa_timeout < 10) {
@@ -3091,7 +3114,7 @@ int confclient_cb(struct gconffile **cf, void *arg, char *block, char *opt, char
         }
     } else if (conf->reverse_coa_timeout != 0) {
         debug(DBG_WARN, "reverseCoATimeout %ld on client %s has no effect: "
-                        "reverseCoARealm or NASidentifier is required",
+                        "reverseCoARealm, NASidentifier or addOperatorNASIdentifier is required",
               conf->reverse_coa_timeout, conf->name);
     }
 #endif

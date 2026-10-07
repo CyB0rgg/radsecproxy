@@ -3,6 +3,15 @@ unreleased changes
 	- Support wildcard certificates (#149)
 	- Support NAIRealm subjectAltName for dynamic discovery
 	- Global option to require Message-Authenticator on all clients and servers
+	- Reverse CoA: CoA/Disconnect-Request received from a server is routed down the
+	  client connection carrying the session, UDP NAS reached per RFC 5176 (CoAPort,
+	  reverseCoARealm, NASidentifier, acceptReverseCoA; #186)
+	- CoA/Disconnect-Request proxying by Operator-Name to coaServer blocks (acceptCoA,
+	  NASidentifier on servers, Error-Cause 502/403; #206)
+	- CoA/Disconnect-Request from a client falls through to the reverse CoA routes and
+	  the response answers the original request; Operator-NAS-Identifier session
+	  affinity (addOperatorNASIdentifier); Operator-Name and Operator-NAS-Identifier
+	  stripped at the final hop; Operator-Name namespaces other than REALM
 
 	Misc:
 	- Prevent TLS connections to self

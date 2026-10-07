@@ -56,7 +56,23 @@ static void test_extract_operator_realm(void) {
     {
         const char *values[] = {"0visited.example"};
         struct radmsg *msg = build_operator_name_msg(values, 1);
-        ok(extract_operator_realm(msg, buf, sizeof(buf)) == NULL, "Operator-Name with wrong namespace byte -> NULL");
+        char *realm = extract_operator_realm(msg, buf, sizeof(buf));
+        ok(realm && !strcmp(realm, "0visited.example"), "namespace '0' Operator-Name is matched as the whole value");
+        radmsg_free(msg);
+    }
+
+    {
+        const char *values[] = {"4IRONWIFI:US"};
+        struct radmsg *msg = build_operator_name_msg(values, 1);
+        char *realm = extract_operator_realm(msg, buf, sizeof(buf));
+        ok(realm && !strcmp(realm, "4IRONWIFI:US"), "WBAID Operator-Name keeps its namespace character");
+        radmsg_free(msg);
+    }
+
+    {
+        const char *values[] = {"1"};
+        struct radmsg *msg = build_operator_name_msg(values, 1);
+        ok(extract_operator_realm(msg, buf, sizeof(buf)) == NULL, "Operator-Name with only a namespace byte -> NULL");
         radmsg_free(msg);
     }
 
@@ -69,11 +85,19 @@ static void test_extract_operator_realm(void) {
     }
 
     {
-        /* extraction must skip the non-'1' first instance */
+        /* the first usable instance decides, whatever its namespace */
         const char *values[] = {"0some-other-format", "1second.example"};
         struct radmsg *msg = build_operator_name_msg(values, 2);
         char *realm = extract_operator_realm(msg, buf, sizeof(buf));
-        ok(realm && !strcmp(realm, "second.example"), "extraction skips non-'1' variants to find the realm one");
+        ok(realm && !strcmp(realm, "0some-other-format"), "first Operator-Name instance decides the routing key");
+        radmsg_free(msg);
+    }
+
+    {
+        const char *values[] = {"1", "1second.example"};
+        struct radmsg *msg = build_operator_name_msg(values, 2);
+        char *realm = extract_operator_realm(msg, buf, sizeof(buf));
+        ok(realm && !strcmp(realm, "second.example"), "an empty Operator-Name instance is skipped");
         radmsg_free(msg);
     }
 
