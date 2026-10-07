@@ -661,11 +661,14 @@ late response is silently discarded.
 .BR "addOperatorNASIdentifier (" on | off )
 .RS
 Add an \fBOperator-NAS-Identifier\fR attribute (RFC 8559 section 3.4) naming this
-client connection to Access-Request and Accounting-Request packets received from this
-client before they are forwarded (default \fBoff\fR). The attribute is only added when
+client to Access-Request and Accounting-Request packets received from this
+client before they are forwarded (default \fBoff\fR). The token names the connection
+for a TLS, DTLS or TCP client and the client block for a UDP client, whose entries
+come and go with the NAS's source ports; when a UDP block covers several NASes the
+NAS address in the returning request picks the entry. The attribute is only added when
 the packet carries an \fBOperator-Name\fR and does not already carry an
 Operator-NAS-Identifier. A CoA-Request or Disconnect-Request that comes back with this
-attribute is routed to the same client connection first (session affinity), before the
+attribute is routed to the same client first (session affinity), before the
 realm and NAS identity matching described under \fBreverseCoARealm\fR and
 \fBNASidentifier\fR; if that connection is gone, those two are tried. Enable this on
 the visited network's NAS-facing clients, together with \fBNASidentifier\fR or
@@ -1055,8 +1058,8 @@ of a "user@realm" identifier), so a plain (non-regex) realm block name matches
 CoA/Disconnect traffic exactly like it does Access-Requests. A
 CoA/Disconnect-Request without a usable Operator-Name, whose Operator-Name
 realm has no matching realm block, or whose matching realm block has no
-\fBcoaServer\fR at all, is answered with Error-Cause 502 (Request Not
-Routable).
+\fBcoaServer\fR at all, is offered to the reverse CoA routes described below and,
+failing those, answered with Error-Cause 502 (Request Not Routable).
 
 A CoA/Disconnect-Request from a client without \fBAcceptCoA\fR enabled is
 likewise answered with Error-Cause 502 rather than forwarded (see

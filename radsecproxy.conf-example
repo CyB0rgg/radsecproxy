@@ -303,7 +303,9 @@ realm * {
 ## CoA is routed by the Operator-Name attribute (RFC 8559 3.2), never by
 ## User-Name; a plain realm name works here exactly like it does for
 ## Access-Requests. Requests with no Operator-Name, or an unknown/empty-
-## coaServer realm, get Error-Cause 502.
+## coaServer realm, are offered to the reverse CoA routes (client blocks with
+## reverseCoARealm or NASidentifier, see the layout below) and only then get
+## Error-Cause 502.
 #realm visited-lab.example {
 #	coaServer 10.0.0.1
 #}
@@ -312,3 +314,51 @@ realm * {
 #	removeAttribute 126
 #	removeAttribute 241
 #}
+
+## Reverse CoA, a worked layout (draft-ietf-radext-reverse-coa, RFC 8559).
+## A NAS behind a site proxy that connects outbound to a hub; the home RADIUS
+## behind the hub originates CoA/Disconnect. The hub sends the request down
+## the site proxy's connection, the site proxy delivers it to the NAS over
+## UDP 3799, and the answers travel back the same way.
+##
+## Site proxy:
+##   client nas1 {
+##       type udp
+##       host 192.0.2.10
+##       secret ...
+##       NASidentifier nas1          # the NAS-Identifier the NAS sends
+##       CoAPort 3799                # its dynamic authorization port
+##       addOperatorNASIdentifier on # optional: a token for session affinity,
+##                                   # added only when an Operator-Name is present
+##   }
+##   server hub {
+##       type tls
+##       host hub.example.com
+##       tls ...
+##       statusServer on             # keeps the path through NAT alive
+##       acceptReverseCoA on         # take CoA/Disconnect arriving on this connection
+##   }
+##
+## Hub:
+##   ListenUDP 127.0.0.1:3799        # where the home RADIUS sends CoA/Disconnect
+##   client site1 {
+##       type tls
+##       host 0.0.0.0/0
+##       tls ...
+##       matchCertificateAttribute CN:/^site1\.example\.com$/
+##       NASidentifier nas1          # route by NAS-Identifier; or reverseCoARealm
+##                                   # to route by the Operator-Name the site adds
+##   }
+##   client home-radius {
+##       type udp
+##       host 127.0.0.1
+##       secret ...
+##       acceptCoA on
+##   }
+##
+## The home RADIUS sends the Disconnect-Request to 127.0.0.1:3799 with the
+## session's User-Name, Acct-Session-Id and the NAS-Identifier (and Operator-Name
+## plus Operator-NAS-Identifier when the site adds them). With no coaServer realm
+## matching, the hub routes it down site1's connection by NASidentifier, the
+## site proxy delivers it to nas1 on 3799, and the NAS's ACK answers the home
+## RADIUS. No realm block and no Operator-Name are required for this layout.

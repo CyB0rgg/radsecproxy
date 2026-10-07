@@ -353,3 +353,69 @@ traverses the list of realms and for each realm:
 freeclsrvconf() performs 15 calls to free() and also invokes
 freegconfmstr(), freehostports(), regfree() and
 pthread_mutex_destroy().
+
+
+4. CoA and Disconnect
+=====================
+
+Two directions exist, both in reverse_coa.c and coa.c.
+
+A CoA/Disconnect-Request received from a SERVER (the reverse direction of
+draft-ietf-radext-reverse-coa) never reaches replyh(). The client reader of
+the transport (tlsclientrd, dtlsclientrd) calls try_handle_reverse_coa_request()
+first; if the server block has acceptReverseCoA, handle_reverse_coa_request()
+parses and verifies the packet with the server's secret, drops duplicates
+(per-server slots keyed by id and authenticator, 30 s) and calls
+route_reverse_coa(). dispatch_reverse_coa() tries, in order: stage 0, the
+client entry whose serial is named in the request's Operator-NAS-Identifier
+(the token this proxy added on the way out, see below); stage 1, the client
+entries registered for the realm taken from Operator-Name (reverseCoARealm);
+stage 2, the entries whose NASidentifier or address matches the request's
+NAS-Identifier, Operator-NAS-Identifier, NAS-IP-Address or NAS-IPv6-Address;
+stage 3, for a UDP NAS that has no entry right now, the client block covering
+the NAS address, from which addclient() creates one on a listening socket of
+the same family. send_coa_to_client() copies the message, strips Operator-Name
+and Operator-NAS-Identifier when the target is the NAS itself (RFC 8559 4.2),
+replaces the Message-Authenticator with a zeroed one (see below), takes the
+next free id from the client's reverse_coa_rqs[] (a second request array, so
+ids never collide with replies), records the sent request authenticator in
+rqout->sentauth and hands the request to sendreply(); a UDP client gets
+rq->to_override with its CoAPort. When nothing matches, the server gets a
+NAK with Error-Cause 502.
+
+The answer from the client arrives at the server reader as any request would.
+radsrv() asks lookup_reverse_coa_rqauth() for the sentauth of that id so that
+buf2radmsg() can verify the response authenticator, then hands a CoA/Disconnect
+ACK or NAK to forward_coa_response(), which re-signs it for the origin: the
+server the request came from (clientradput) or, see next paragraph, the client
+that originated it (sendreply on the original request). For UDP the reply comes
+from the NAS's CoA port, not the port the client entry was created from, so
+radudpget() falls back to find_reverse_coa_client_for_response(), matching by
+address, pending id and response authenticator. A UDP entry with a reverse CoA
+pending is not expired.
+
+A CoA/Disconnect-Request received from a CLIENT goes through radsrv() like any
+request: acceptCoA on the client block, Event-Timestamp freshness within the
+client's DuplicateInterval, then findcoaserver() in coa.c routes by the
+Operator-Name realm to the realm's coaServer blocks (RFC 8559; Error-Cause 403
+when the realm is NAS-discriminating and nothing matches). When no coaServer
+takes it, route_reverse_coa_from_client() offers it to the same four stages;
+the tracking request keeps a reference to the original request in rq->origin
+and forward_coa_response() answers that request with the ACK or NAK that comes
+back. Only when neither path has a route is the client answered 502.
+
+Operator-NAS-Identifier (RFC 8559 3.4): a client block with
+addOperatorNASIdentifier gets a token "rsp1:<nonce>:<serial>" added to the
+Access-Request and Accounting-Request it sends on, only next to an Operator-Name
+and never twice. The nonce is per process; the serial is per connection for
+TLS/DTLS/TCP clients and per client block for UDP clients, whose entries come
+and go with source ports. Stage 0 parses the token back.
+
+Message-Authenticator: radmsgsign() signs over the value present in the
+packet, so a relayed message carrying the previous hop's HMAC must get a
+zeroed one first; ensuremsgauthfront() does that for forwarded CoA requests
+and relayed CoA responses exactly as it does for Access traffic.
+
+Operator-Name: the routing key is the realm after the namespace character for
+namespace '1' (REALM, RFC 5580), and the whole value including the namespace
+character for any other namespace, e.g. a WBAID "4IRONWIFI:US".
