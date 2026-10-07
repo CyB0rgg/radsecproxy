@@ -641,7 +641,11 @@ request. Compared against the RADIUS attributes \fBNAS-Identifier\fR (32), \fBOp
 (sub-attribute 8 of attribute 241), \fBNAS-IP-Address\fR (4), and \fBNAS-IPv6-Address\fR (95)
 in the incoming reverse-CoA request. A UDP client selected this way receives the request
 as RFC 5176 Dynamic Authorization on its \fBCoAPort\fR; a TLS/DTLS/TCP client receives
-it on its existing connection. Operator-Name and Operator-NAS-Identifier are removed
+it on its existing connection. A UDP NAS that has not sent anything recently (its
+entry lives 60 seconds past its last request) is still reached: the client block
+covering the NAS address the request names in \fBNAS-IP-Address\fR or
+\fBNAS-IPv6-Address\fR, or the block whose \fBNASidentifier\fR the request names and
+which lists a single host, is used to create the entry on the spot. Operator-Name and Operator-NAS-Identifier are removed
 from the packet delivered to the NAS (RFC 8559 section 4.2).
 .RE
 

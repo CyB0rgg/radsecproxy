@@ -11,7 +11,9 @@ unreleased changes
 	- CoA/Disconnect-Request from a client falls through to the reverse CoA routes and
 	  the response answers the original request; Operator-NAS-Identifier session
 	  affinity (addOperatorNASIdentifier); Operator-Name and Operator-NAS-Identifier
-	  stripped at the final hop; Operator-Name namespaces other than REALM
+	  stripped at the final hop; Operator-Name namespaces other than REALM; an idle
+	  UDP NAS is reached from its client block (NAS-IP-Address, NAS-IPv6-Address or
+	  NASidentifier); CoA/Disconnect names in log messages
 
 	Misc:
 	- Prevent TLS connections to self

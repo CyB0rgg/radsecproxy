@@ -10,6 +10,7 @@
 #include "hash.h"
 #include "list.h"
 #include "radmsg.h"
+#include "udp.h"
 #include "util.h"
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -994,6 +995,116 @@ static int try_send_to_nas_client(struct server *server, struct request *origin,
     return sent;
 }
 
+/* the NAS address named in the request: NAS-IP-Address or NAS-IPv6-Address, port 0 */
+int reverse_coa_nas_addr(struct radmsg *msg, struct sockaddr_storage *out) {
+    struct tlv *attr;
+
+    memset(out, 0, sizeof(*out));
+    attr = radmsg_gettype(msg, RAD_Attr_NAS_IP_Address);
+    if (attr && attr->l == 4) {
+        struct sockaddr_in *sin = (struct sockaddr_in *)out;
+        sin->sin_family = AF_INET;
+        memcpy(&sin->sin_addr, attr->v, 4);
+        return 1;
+    }
+    attr = radmsg_gettype(msg, RAD_Attr_NAS_IPv6_Address);
+    if (attr && attr->l == 16) {
+        struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)out;
+        sin6->sin6_family = AF_INET6;
+        memcpy(&sin6->sin6_addr, attr->v, 16);
+        return 1;
+    }
+    return 0;
+}
+
+/* does the request name this client block's NASidentifier (NAS-Identifier or
+   Operator-NAS-Identifier)? 1 yes, 0 no, -1 if the request carries neither */
+static int conf_nas_identifier_match(struct clsrvconf *conf, struct radmsg *msg) {
+    struct tlv *attr;
+    size_t len;
+    int seen = 0;
+
+    if (!conf->nas_identifier)
+        return 0;
+    len = strlen(conf->nas_identifier);
+    attr = radmsg_gettype(msg, RAD_Attr_NAS_Identifier);
+    if (attr) {
+        seen = 1;
+        if (attr->l == len && !memcmp(attr->v, conf->nas_identifier, len))
+            return 1;
+    }
+    attr = radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier);
+    if (attr) {
+        seen = 1;
+        if (attr->l - 1 == len && !memcmp(attr->v + 1, conf->nas_identifier, len))
+            return 1;
+    }
+    return seen ? 0 : -1;
+}
+
+/* the single host a client block names, if it names exactly one */
+static int conf_host_addr(struct clsrvconf *conf, struct sockaddr_storage *out) {
+    struct hostportres *hp;
+
+    if (!conf->hostports || list_count(conf->hostports) != 1)
+        return 0;
+    hp = (struct hostportres *)list_first(conf->hostports)->data;
+    if (!hp || !hp->host || strchr(hp->host, '/') || !hp->addrinfo || !hp->addrinfo->ai_addr)
+        return 0;
+    memset(out, 0, sizeof(*out));
+    memcpy(out, hp->addrinfo->ai_addr, hp->addrinfo->ai_addrlen);
+    return 1;
+}
+
+/* stage 3: a UDP NAS that is known from configuration but has no client entry right
+   now (idle longer than the entry lives, or never sent anything). Find the client
+   block covering the NAS address named in the request, or the block whose
+   NASidentifier the request names and which names a single host, create the entry
+   on a listening socket of the right family and deliver. */
+static int try_create_nas_client(struct server *server, struct request *origin, struct radmsg *msg) {
+    struct sockaddr_storage addr;
+    struct clsrvconf *conf = NULL;
+    struct list_node *cur = NULL;
+    struct client *client;
+    struct timeval now;
+    char tmp[INET6_ADDRSTRLEN];
+    int sock;
+
+    if (reverse_coa_nas_addr(msg, &addr)) {
+        conf = find_clconf(RAD_UDP, (struct sockaddr *)&addr, NULL, NULL);
+        if (conf && conf->nas_identifier && conf_nas_identifier_match(conf, msg) == 0) {
+            debug(DBG_INFO, "try_create_nas_client: client %s covers %s but the request names another NAS", conf->name, addr2string((struct sockaddr *)&addr, tmp, sizeof(tmp)));
+            return 0;
+        }
+    } else {
+        while ((conf = find_clconf_type(RAD_UDP, &cur)))
+            if (conf_nas_identifier_match(conf, msg) == 1 && conf_host_addr(conf, &addr))
+                break;
+    }
+    if (!conf) {
+        debug(DBG_DBG, "try_create_nas_client: no udp client block for the NAS named in the request");
+        return 0;
+    }
+    if (!(conf->nas_identifier || conf->add_operator_nas_id || conf->reverse_coa_realms)) {
+        debug(DBG_INFO, "try_create_nas_client: client %s covers the NAS but is not configured for reverse coa", conf->name);
+        return 0;
+    }
+    sock = udplistenersocket(addr.ss_family);
+    if (sock < 0) {
+        debug(DBG_WARN, "try_create_nas_client: no udp listener for the address family of %s", addr2string((struct sockaddr *)&addr, tmp, sizeof(tmp)));
+        return 0;
+    }
+    client = addclient(conf, sock, (struct sockaddr *)&addr, 1);
+    if (!client) {
+        debug(DBG_ERR, "try_create_nas_client: addclient failed for %s", conf->name);
+        return 0;
+    }
+    gettimeofday(&now, NULL);
+    client->expiry = now.tv_sec + conf->reverse_coa_timeout + 60;
+    debug(DBG_INFO, "try_create_nas_client: created client %s (%s) from its configuration to deliver a reverse coa", conf->name, addr2string((struct sockaddr *)&addr, tmp, sizeof(tmp)));
+    return send_coa_to_client(server, origin, client, msg, 1);
+}
+
 static int dispatch_reverse_coa(struct server *server, struct request *origin, struct radmsg *msg) {
     char realm_buf[256];
     char *realm = extract_operator_realm(msg, realm_buf, sizeof(realm_buf));
@@ -1002,12 +1113,15 @@ static int dispatch_reverse_coa(struct server *server, struct request *origin, s
 
     /* stage 0: the connection named in Operator-NAS-Identifier, then the two
        stages of draft-ietf-radext-reverse-coa section 6: stage 1 - realm-based
-       (intermediate proxy), stage 2 - NAS-identity (final proxy) */
+       (intermediate proxy), stage 2 - NAS-identity (final proxy); stage 3 - a
+       UDP NAS known from configuration but without a client entry right now */
     if (try_send_to_affine_client(server, origin, msg))
         return 1;
     if (realm && try_send_to_realm_clients(server, origin, realm, msg))
         return 1;
     if (try_send_to_nas_client(server, origin, msg))
+        return 1;
+    if (try_create_nas_client(server, origin, msg))
         return 1;
 
     if (realm)

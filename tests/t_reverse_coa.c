@@ -544,6 +544,27 @@ int main(int argc, char *argv[]) {
         radmsg_free(msg);
     }
 
+    /* test: the NAS address named in a request */
+    {
+        struct radmsg *msg;
+        struct sockaddr_storage ss;
+        uint8_t auth[16] = {0};
+        uint8_t v4[4] = {10, 0, 0, 69};
+        uint8_t v6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+
+        msg = radmsg_init(RAD_Disconnect_Request, 1, auth);
+        test_ok(!reverse_coa_nas_addr(msg, &ss), "nas_addr: none without NAS-IP-Address or NAS-IPv6-Address");
+        radmsg_add(msg, maketlv(RAD_Attr_NAS_IPv6_Address, 16, v6), 0);
+        test_ok(reverse_coa_nas_addr(msg, &ss) && ss.ss_family == AF_INET6 &&
+                    !memcmp(&((struct sockaddr_in6 *)&ss)->sin6_addr, v6, 16),
+                "nas_addr: NAS-IPv6-Address gives an AF_INET6 address");
+        radmsg_add(msg, maketlv(RAD_Attr_NAS_IP_Address, 4, v4), 0);
+        test_ok(reverse_coa_nas_addr(msg, &ss) && ss.ss_family == AF_INET &&
+                    !memcmp(&((struct sockaddr_in *)&ss)->sin_addr, v4, 4) && ((struct sockaddr_in *)&ss)->sin_port == 0,
+                "nas_addr: NAS-IP-Address preferred, port 0");
+        radmsg_free(msg);
+    }
+
     printf("1..%d\n", numtests);
     return 0;
 }

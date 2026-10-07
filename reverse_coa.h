@@ -24,6 +24,7 @@ int add_operator_nas_identifier(struct client *from, struct radmsg *msg);
 int reverse_coa_oni_format(uint32_t serial, char *buf, size_t bufsize);
 int reverse_coa_oni_parse(const struct tlv *attr, uint32_t *serial);
 void strip_operator_attrs(struct radmsg *msg);
+int reverse_coa_nas_addr(struct radmsg *msg, struct sockaddr_storage *out);
 
 #else
 
@@ -80,6 +81,11 @@ static inline int reverse_coa_oni_parse(const struct tlv *attr, uint32_t *serial
     return 0;
 }
 static inline void strip_operator_attrs(struct radmsg *msg) { (void)msg; }
+static inline int reverse_coa_nas_addr(struct radmsg *msg, struct sockaddr_storage *out) {
+    (void)msg;
+    (void)out;
+    return 0;
+}
 
 #endif
 
