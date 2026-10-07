@@ -207,6 +207,7 @@ struct clsrvconf {
     char *nas_identifier;
     long reverse_coa_timeout;
     uint16_t coaport; /* reverse coa destination port for udp clients, default 3799 */
+    uint8_t accept_coa;
 };
 
 #include "tlscommon.h"
@@ -274,6 +275,7 @@ struct realm {
     struct list *subrealms;
     struct list *srvconfs;
     struct list *accsrvconfs;
+    struct list *coasrvconfs;
 };
 
 struct protodefs {
@@ -319,6 +321,9 @@ int replyh(struct server *server, uint8_t *buf, int buflen);
 struct addrinfo *resolve_hostport_addrinfo(uint8_t type, char *hostport);
 uint8_t *radattr2ascii(struct tlv *attr); /* TODO: mv this to radmsg? */
 extern pthread_attr_t pthread_attr;
+
+struct clsrvconf *choosesrvconf(struct list *srvconfs);
+int addserver(struct clsrvconf *conf, const char *dynamiclookuparg);
 
 #endif /* _RADSECPROXY_H */
 
