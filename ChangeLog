@@ -13,7 +13,8 @@ unreleased changes
 	  affinity (addOperatorNASIdentifier); Operator-Name and Operator-NAS-Identifier
 	  stripped at the final hop; Operator-Name namespaces other than REALM; an idle
 	  UDP NAS is reached from its client block (NAS-IP-Address, NAS-IPv6-Address or
-	  NASidentifier); CoA/Disconnect names in log messages
+	  NASidentifier); CoA/Disconnect names in log messages; relayed CoA requests and
+	  responses get a fresh Message-Authenticator before re-signing
 
 	Misc:
 	- Prevent TLS connections to self

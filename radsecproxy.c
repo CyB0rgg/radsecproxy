@@ -1344,7 +1344,7 @@ static void log_accounting_resp(struct client *from, struct radmsg *msg, char *u
  * @param msg 
  * @return 1 if ok, 0 if failed (i.e. memory allocation error)
  */
-static int ensuremsgauthfront(struct radmsg *msg) {
+int ensuremsgauthfront(struct radmsg *msg) {
     static uint8_t msgauth[] = {RAD_Attr_Message_Authenticator, 0};
 
     dorewriterm(msg, msgauth, NULL, 0);
@@ -1628,7 +1628,7 @@ int radsrv(struct request *rq) {
         goto rmclrqexit;
     }
 
-    if (msg->code == RAD_Access_Request &&
+    if ((msg->code == RAD_Access_Request || IS_COA_REQUEST(msg->code)) &&
         !ensuremsgauthfront(msg))
         goto rmclrqexit;
 
@@ -1942,7 +1942,7 @@ int replyh(struct server *server, uint8_t *buf, int len) {
         goto errunlock;
     }
 
-    if ((msg->code == RAD_Access_Challenge || msg->code == RAD_Access_Accept || msg->code == RAD_Access_Reject) &&
+    if ((msg->code == RAD_Access_Challenge || msg->code == RAD_Access_Accept || msg->code == RAD_Access_Reject || IS_COA_RESPONSE(msg->code)) &&
         !ensuremsgauthfront(msg))
         goto errunlock;
 

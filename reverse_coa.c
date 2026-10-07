@@ -722,6 +722,12 @@ static int send_coa_to_client(struct server *from_server, struct request *origin
     }
     if (final_hop)
         strip_operator_attrs(copy);
+    /* a relayed message carries the previous hop's Message-Authenticator; radmsgsign
+       signs over a zeroed one, so replace it as master does for forwarded requests */
+    if (!ensuremsgauthfront(copy)) {
+        radmsg_free(copy);
+        return 0;
+    }
 
     rq = newrequest();
     if (!rq) {
@@ -1253,6 +1259,11 @@ int forward_coa_response(struct client *from, struct radmsg *msg) {
         }
         reply->id = origin->rqid;
         memcpy(reply->auth, origin->rqauth, 16);
+        if (!ensuremsgauthfront(reply)) {
+            radmsg_free(reply);
+            freerq(origin);
+            goto cleanup;
+        }
         debug(DBG_DBG, "forward_coa_response: answering request id %d from client %s with %s",
               origin->rqid, origin->from->conf->name, radmsgtype2string(reply->code));
         radmsg_free(origin->msg);
@@ -1280,6 +1291,8 @@ int forward_coa_response(struct client *from, struct radmsg *msg) {
     }
     server_copy->id = origid;
     memcpy(server_copy->auth, origauth, 16);
+    if (!ensuremsgauthfront(server_copy))
+        goto cleanup;
 
     radlen = radmsg2buf(server_copy, to_server->conf->secret, to_server->conf->secret_len, &buf);
     if (radlen <= 0) {

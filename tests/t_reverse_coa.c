@@ -565,6 +565,40 @@ int main(int argc, char *argv[]) {
         radmsg_free(msg);
     }
 
+    /* test: a relayed response carries the previous hop's Message-Authenticator;
+       it must be replaced before re-signing or the next hop rejects it */
+    {
+        const char *secret = "radsec";
+        uint8_t rqauth[16], stale[16], *buf = NULL;
+        uint32_t cause = htonl(406);
+        struct radmsg *nak, *back;
+        int len, i;
+
+        for (i = 0; i < 16; i++) {
+            rqauth[i] = (uint8_t)(0xa0 + i);
+            stale[i] = (uint8_t)(0x5a ^ i);
+        }
+        nak = radmsg_init(RAD_Disconnect_NAK, 5, rqauth);
+        radmsg_add(nak, maketlv(RAD_Attr_Error_Cause, 4, &cause), 0);
+        radmsg_add(nak, maketlv(RAD_Attr_Message_Authenticator, 16, stale), 0);
+        len = radmsg2buf(nak, (uint8_t *)secret, strlen(secret), &buf);
+        back = len > 0 ? buf2radmsg(buf, len, (uint8_t *)secret, strlen(secret), rqauth) : NULL;
+        test_ok(back && (back->authstate == RSP_RADMSG_INVALID || back->authstate == RSP_RADMSG_MSGAUTH_INVALID),
+                "relay: stale message-authenticator signed as is fails verification");
+        radmsg_free(back);
+        free(buf);
+        buf = NULL;
+
+        memcpy(nak->auth, rqauth, 16);
+        test_ok(ensuremsgauthfront(nak), "relay: ensuremsgauthfront replaces the stale value");
+        len = radmsg2buf(nak, (uint8_t *)secret, strlen(secret), &buf);
+        back = len > 0 ? buf2radmsg(buf, len, (uint8_t *)secret, strlen(secret), rqauth) : NULL;
+        test_ok(back && back->authstate == RSP_RADMSG_MSGAUTH_VALID, "relay: re-signed response verifies at the next hop");
+        radmsg_free(back);
+        free(buf);
+        radmsg_free(nak);
+    }
+
     printf("1..%d\n", numtests);
     return 0;
 }

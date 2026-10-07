@@ -315,6 +315,7 @@ struct gqueue *newqueue(void);
 struct request *newrequest(void);
 struct request *newrqref(struct request *rq);
 int sendreply(struct request *rq);
+int ensuremsgauthfront(struct radmsg *msg);
 void freerq(struct request *rq);
 const char *radmsgtype2string(uint8_t code);
 int radsrv(struct request *rq);
