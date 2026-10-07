@@ -14,7 +14,9 @@ unreleased changes
 	  stripped at the final hop; Operator-Name namespaces other than REALM; an idle
 	  UDP NAS is reached from its client block (NAS-IP-Address, NAS-IPv6-Address or
 	  NASidentifier); CoA/Disconnect names in log messages; relayed CoA requests and
-	  responses get a fresh Message-Authenticator before re-signing
+	  responses get a fresh Message-Authenticator before re-signing; a udp client entry
+	  with a reverse CoA in flight is not expired; udp clients of one block share one
+	  Operator-NAS-Identifier token
 
 	Misc:
 	- Prevent TLS connections to self

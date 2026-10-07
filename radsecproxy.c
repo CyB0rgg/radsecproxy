@@ -233,7 +233,14 @@ struct client *addclient(struct clsrvconf *conf, int sock,
 
     new->conf = conf;
     new->sock = sock;
-    new->serial = nextclientserial();
+    /* a tls/dtls/tcp client is one connection; a udp client entry is one source port and
+       the NAS may use a new one per request, so udp entries of a block share its serial */
+    if (conf->type == RAD_UDP) {
+        if (!conf->serial)
+            conf->serial = nextclientserial();
+        new->serial = conf->serial;
+    } else
+        new->serial = nextclientserial();
     /* set addr before register_reverse_coa_client so any concurrent
        lookup that finds the new client via realm_reverse_coa_lock never dereferences
        a NULL addr */

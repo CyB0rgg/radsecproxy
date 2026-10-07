@@ -599,6 +599,24 @@ int main(int argc, char *argv[]) {
         radmsg_free(nak);
     }
 
+    /* test: an entry with a reverse coa pending is reported as busy */
+    {
+        struct client cli;
+        struct request dummy;
+
+        memset(&cli, 0, sizeof(cli));
+        memset(&dummy, 0, sizeof(dummy));
+        pthread_mutex_init(&cli.lock, NULL);
+        test_ok(!client_has_pending_reverse_coa(&cli), "pending: no tracking array, not pending");
+        cli.reverse_coa_rqs = calloc(MAX_REQUESTS, sizeof(struct rqout));
+        test_ok(!client_has_pending_reverse_coa(&cli), "pending: empty array, not pending");
+        cli.reverse_coa_rqs[200].rq = &dummy;
+        test_ok(client_has_pending_reverse_coa(&cli), "pending: one request in flight, pending");
+        cli.reverse_coa_rqs[200].rq = NULL;
+        free(cli.reverse_coa_rqs);
+        pthread_mutex_destroy(&cli.lock);
+    }
+
     printf("1..%d\n", numtests);
     return 0;
 }

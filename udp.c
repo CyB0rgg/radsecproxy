@@ -26,6 +26,7 @@
 
 #ifdef RADPROT_UDP
 #include "debug.h"
+#include "reverse_coa.h"
 #include "util.h"
 
 static void setprotoopts(struct commonprotoopts *opts);
@@ -284,7 +285,7 @@ int radudpget(int s, struct client **client, struct server **server, unsigned ch
                     c->expiry = now.tv_sec + 60;
                     *client = c;
                 }
-                if (c->expiry >= now.tv_sec)
+                if (c->expiry >= now.tv_sec || client_has_pending_reverse_coa(c))
                     continue;
 
                 debug(DBG_DBG, "radudpget: removing expired client (%s)", addr2string(c->addr, tmp, sizeof(tmp)));

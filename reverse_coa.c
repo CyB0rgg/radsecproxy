@@ -356,6 +356,19 @@ static void clear_rqout(struct rqout *rqout) {
     memset(&rqout->expiry, 0, sizeof(struct timeval));
 }
 
+/* a client entry with a reverse coa in flight must outlive the udp expiry sweep */
+int client_has_pending_reverse_coa(struct client *client) {
+    int i, pending = 0;
+
+    if (!client || !client->reverse_coa_rqs)
+        return 0;
+    pthread_mutex_lock(&client->lock);
+    for (i = 0; i < MAX_REQUESTS && !pending; i++)
+        pending = client->reverse_coa_rqs[i].rq != NULL;
+    pthread_mutex_unlock(&client->lock);
+    return pending;
+}
+
 void free_reverse_coa_rqs(struct client *client) {
     if (!client->reverse_coa_rqs)
         return;
@@ -799,6 +812,8 @@ static int send_coa_to_client(struct server *from_server, struct request *origin
     rqout->rq = rq;
     gettimeofday(&rqout->expiry, NULL);
     rqout->expiry.tv_sec += to_client->conf->reverse_coa_timeout;
+    if (to_client->conf->type == RAD_UDP && to_client->expiry < rqout->expiry.tv_sec + 60)
+        to_client->expiry = rqout->expiry.tv_sec + 60;
     memcpy(rqout->sentauth, rq->replybuf + 4, 16);
 
     pthread_mutex_unlock(&to_client->lock);
@@ -930,20 +945,35 @@ static void cache_coa_dedup_reply(struct server *server, uint8_t id, uint8_t *au
 
 /* stage 0: the connection this proxy named in Operator-NAS-Identifier when it
    forwarded the session's Access-Request (RFC 8559 section 3.4) */
+static int same_ip(const struct sockaddr *a, const struct sockaddr *b) {
+    if (!a || !b || a->sa_family != b->sa_family)
+        return 0;
+    if (a->sa_family == AF_INET)
+        return ((const struct sockaddr_in *)a)->sin_addr.s_addr == ((const struct sockaddr_in *)b)->sin_addr.s_addr;
+    if (a->sa_family == AF_INET6)
+        return !memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr, &((const struct sockaddr_in6 *)b)->sin6_addr, 16);
+    return 0;
+}
+
 static int try_send_to_affine_client(struct server *server, struct request *origin, struct radmsg *msg) {
     struct reverse_coa_route *route = NULL;
     struct list_node *node;
+    struct sockaddr_storage nas_addr;
     uint32_t serial;
-    int sent = 0;
+    int sent = 0, has_nas_addr;
 
     if (!reverse_coa_oni_parse(radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier), &serial))
         return 0;
 
+    /* a udp token names the client block, so the NAS address in the request decides
+       which entry of the block when several NASes share it */
+    has_nas_addr = reverse_coa_nas_addr(msg, &nas_addr);
     pthread_mutex_lock(&realm_reverse_coa_lock);
     for (node = list_first(reverse_coa_nas_routes); node && !route; node = list_next(node)) {
         struct reverse_coa_route *candidate = (struct reverse_coa_route *)node->data;
         pthread_mutex_lock(&candidate->refmutex);
-        if (candidate->target && candidate->target->serial == serial)
+        if (candidate->target && candidate->target->serial == serial &&
+            (candidate->target->conf->type != RAD_UDP || !has_nas_addr || same_ip(candidate->target->addr, (struct sockaddr *)&nas_addr)))
             route = candidate;
         pthread_mutex_unlock(&candidate->refmutex);
     }

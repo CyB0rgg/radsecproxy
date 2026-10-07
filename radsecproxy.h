@@ -210,6 +210,7 @@ struct clsrvconf {
     uint16_t coaport; /* reverse coa destination port for udp clients, default 3799 */
     uint8_t accept_coa;
     uint8_t add_operator_nas_id;
+    uint32_t serial; /* udp clients share one token per block, see addclient() */
 };
 
 #include "tlscommon.h"
