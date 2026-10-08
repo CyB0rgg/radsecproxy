@@ -1,4 +1,5 @@
 /* Copyright (c) 2026, Nova Labs */
+/* Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
 #include "../debug.h"
@@ -471,6 +472,49 @@ int main(int argc, char *argv[]) {
         test_eq(RAD_Err_Request_Not_Routable, route_reverse_coa_from_client(origin), "not back to the sender");
         test_ok(!queued(nas), "nothing queued for the sender");
         freerq(origin);
+    }
+
+    /* session table */
+    {
+        char key[32];
+        uint32_t n, before;
+        int i;
+
+        before = _internal_sessionbindcount();
+        _internal_sessionbindset(nas->reverse_coa_route, "k1", 2);
+        _internal_sessionbindset(nas->reverse_coa_route, "k2", 2);
+        _internal_sessionbindset(nas->reverse_coa_route, "k3", 2);
+        test_eq(before + 3, _internal_sessionbindcount(), "three entries");
+        _internal_sessionbindset(nas->reverse_coa_route, "k1", 2);
+        test_eq(before + 3, _internal_sessionbindcount(), "same key once");
+        test_ok(_internal_sessionbindfind("k2", 2), "entry found");
+        test_ok(!_internal_sessionbindfind("k9", 2), "unknown key not found");
+        for (i = 0; before + 3 + i < 65536; i++) {
+            n = snprintf(key, sizeof(key), "fill%d", i);
+            _internal_sessionbindset(nas->reverse_coa_route, key, n);
+        }
+        test_eq(65536, _internal_sessionbindcount(), "at the limit");
+        /* one more than the entries older than k2 go in, so k2 is the one evicted last */
+        for (i = 0; i < (int)before + 1; i++) {
+            n = snprintf(key, sizeof(key), "more%d", i);
+            _internal_sessionbindset(nas->reverse_coa_route, key, n);
+        }
+        test_eq(65536, _internal_sessionbindcount(), "limit holds");
+        test_ok(!_internal_sessionbindfind("k2", 2), "oldest evicted");
+        test_ok(_internal_sessionbindfind("k1", 2), "touched entry kept");
+        _internal_sessionbindclear("k1", 2);
+        test_ok(!_internal_sessionbindfind("k1", 2), "cleared");
+        test_eq(65535, _internal_sessionbindcount(), "count after clear");
+        for (i = 0; i < 65536; i++) {
+            n = snprintf(key, sizeof(key), "fill%d", i);
+            _internal_sessionbindclear(key, n);
+        }
+        for (i = 0; i < (int)before + 1; i++) {
+            n = snprintf(key, sizeof(key), "more%d", i);
+            _internal_sessionbindclear(key, n);
+        }
+        _internal_sessionbindclear("k3", 2);
+        test_eq(0, _internal_sessionbindcount(), "table emptied");
     }
 
     /* duplicates */

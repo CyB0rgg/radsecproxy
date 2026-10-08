@@ -1,4 +1,5 @@
 /* Copyright (c) 2026, Nova Labs */
+/* Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
 #include "../coa.h"

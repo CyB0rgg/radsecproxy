@@ -1,4 +1,5 @@
 /* Copyright (c) 2026, Nova Labs */
+/* Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
 #ifndef _REVERSE_COA_H
@@ -33,6 +34,10 @@ int _internal_is_coa_duplicate(struct server *server, struct radmsg *msg);
 void _internal_record_coa_dedup(struct server *server, uint8_t id, uint8_t *auth);
 int _internal_match_nas_identifier(struct client *client, struct radmsg *msg);
 struct client *_internal_reverse_coa_route_target(struct reverse_coa_route *route);
+void _internal_sessionbindset(struct reverse_coa_route *route, const char *key, uint32_t keylen);
+void _internal_sessionbindclear(const char *key, uint32_t keylen);
+int _internal_sessionbindfind(const char *key, uint32_t keylen);
+uint32_t _internal_sessionbindcount(void);
 
 #endif /* _REVERSE_COA_H */
 

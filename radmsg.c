@@ -1,6 +1,7 @@
 /* Copyright (c) 2007-2009, UNINETT AS
  * Copyright (c) 2023, SWITCH
- * Copyright (c) 2026, Nova Labs */
+ * Copyright (c) 2026, Nova Labs
+ * Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
 #include "debug.h"

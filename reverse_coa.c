@@ -1,11 +1,11 @@
 /* Copyright (c) 2026, Nova Labs */
+/* Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
 #include "reverse_coa.h"
 
 #include "coa.h"
 #include "debug.h"
-#include "hash.h"
 #include "list.h"
 #include "radmsg.h"
 #include "udp.h"
@@ -81,15 +81,11 @@ struct client *_internal_reverse_coa_route_target(struct reverse_coa_route *rout
 static struct list *reverse_coa_realm_list;
 static struct list *reverse_coa_nas_routes;
 static pthread_mutex_t realm_reverse_coa_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct hash *sessionbinds; /* locks itself per call; sessionbind_lock covers a lookup and the change */
-static pthread_mutex_t sessionbind_lock = PTHREAD_MUTEX_INITIALIZER;
-static uint32_t sessionbindcount;
 
 void init_reverse_coa(void) {
-    sessionbinds = hash_create();
     reverse_coa_realm_list = list_create();
     reverse_coa_nas_routes = list_create();
-    if (!sessionbinds || !reverse_coa_realm_list || !reverse_coa_nas_routes)
+    if (!reverse_coa_realm_list || !reverse_coa_nas_routes)
         debugx(1, DBG_ERR, "malloc failed");
 }
 
@@ -780,13 +776,22 @@ static int send_coa_to_client(struct server *from_server, struct request *origin
    coa for the session goes down the same connection when several are registered */
 #define SESSIONBIND_MAX 65536
 #define SESSIONBIND_TTL 86400
+#define SESSIONBIND_BUCKETS 4096
 
+/* an entry sits in one bucket chain and in the age list, oldest first */
 struct sessionbind {
+    struct sessionbind *next;
+    struct sessionbind *older, *newer;
     struct reverse_coa_route *route;
     time_t seen;
     char *key;
     uint32_t keylen;
 };
+
+static struct sessionbind *sessionbinds[SESSIONBIND_BUCKETS];
+static struct sessionbind *sessionbind_oldest, *sessionbind_newest;
+static pthread_mutex_t sessionbind_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t sessionbindcount;
 
 /* key is <realm>\0<attr>\0<value>; attr 44 or 89 taken from reply if given, else msg */
 int sessionbindkey(struct radmsg *msg, struct radmsg *reply, uint8_t attr, char *buf, size_t bufsize) {
@@ -810,79 +815,114 @@ int sessionbindkey(struct radmsg *msg, struct radmsg *reply, uint8_t attr, char 
     return (int)len;
 }
 
-static void sessionbindfree(struct sessionbind *b) {
+static uint32_t sessionbindhash(const char *key, uint32_t keylen) {
+    uint32_t h = 2166136261u, i;
+
+    for (i = 0; i < keylen; i++) {
+        h ^= (uint8_t)key[i];
+        h *= 16777619u;
+    }
+    return h & (SESSIONBIND_BUCKETS - 1);
+}
+
+/* sessionbind_lock held */
+static struct sessionbind *sessionbindfind(const char *key, uint32_t keylen) {
+    struct sessionbind *b;
+
+    for (b = sessionbinds[sessionbindhash(key, keylen)]; b; b = b->next)
+        if (b->keylen == keylen && !memcmp(b->key, key, keylen))
+            return b;
+    return NULL;
+}
+
+/* takes the entry out of its bucket and the age list and frees it; sessionbind_lock held */
+static void sessionbindremove(struct sessionbind *b) {
+    struct sessionbind **p;
+
+    for (p = &sessionbinds[sessionbindhash(b->key, b->keylen)]; *p && *p != b; p = &(*p)->next)
+        ;
+    if (*p)
+        *p = b->next;
+    if (b->older)
+        b->older->newer = b->newer;
+    else
+        sessionbind_oldest = b->newer;
+    if (b->newer)
+        b->newer->older = b->older;
+    else
+        sessionbind_newest = b->older;
     reverse_coa_route_deref(b->route);
     free(b->key);
     free(b);
+    sessionbindcount--;
 }
 
-/* drops expired entries, and the oldest ones while over the limit; sessionbind_lock held */
-static void sessionbindprune(time_t now) {
-    struct hash_entry *e, *next;
-    struct sessionbind *b, *oldest;
-
-    for (e = hash_first(sessionbinds); e; e = next) {
-        next = hash_next(e);
-        b = (struct sessionbind *)e->data;
-        if (now - b->seen > SESSIONBIND_TTL) {
-            hash_extract(sessionbinds, b->key, b->keylen);
-            sessionbindfree(b);
-            sessionbindcount--;
-        }
-    }
-    while (sessionbindcount >= SESSIONBIND_MAX) {
-        oldest = NULL;
-        for (e = hash_first(sessionbinds); e; e = hash_next(e)) {
-            b = (struct sessionbind *)e->data;
-            if (!oldest || b->seen < oldest->seen)
-                oldest = b;
-        }
-        if (!oldest)
-            break;
-        hash_extract(sessionbinds, oldest->key, oldest->keylen);
-        sessionbindfree(oldest);
-        sessionbindcount--;
-    }
+/* makes the entry the newest; sessionbind_lock held */
+static void sessionbindtouch(struct sessionbind *b, time_t now) {
+    b->seen = now;
+    if (b == sessionbind_newest)
+        return;
+    if (b->older)
+        b->older->newer = b->newer;
+    else
+        sessionbind_oldest = b->newer;
+    if (b->newer)
+        b->newer->older = b->older;
+    b->older = sessionbind_newest;
+    b->newer = NULL;
+    if (sessionbind_newest)
+        sessionbind_newest->newer = b;
+    else
+        sessionbind_oldest = b;
+    sessionbind_newest = b;
 }
 
 static void sessionbindset(struct reverse_coa_route *route, const char *key, uint32_t keylen) {
     struct sessionbind *b;
+    uint32_t h;
     time_t now;
 
     time(&now);
     pthread_mutex_lock(&sessionbind_lock);
-    b = (struct sessionbind *)hash_read(sessionbinds, key, keylen);
+    b = sessionbindfind(key, keylen);
     if (b) {
         if (b->route != route) {
             reverse_coa_route_deref(b->route);
             reverse_coa_route_ref(route);
             b->route = route;
         }
-        b->seen = now;
+        sessionbindtouch(b, now);
         pthread_mutex_unlock(&sessionbind_lock);
         return;
     }
-    if (sessionbindcount >= SESSIONBIND_MAX)
-        sessionbindprune(now);
+    /* expired entries and, at the limit, the oldest go from the old end of the age list */
+    while (sessionbind_oldest && (now - sessionbind_oldest->seen > SESSIONBIND_TTL || sessionbindcount >= SESSIONBIND_MAX))
+        sessionbindremove(sessionbind_oldest);
     b = malloc(sizeof(struct sessionbind));
-    if (b) {
-        b->key = malloc(keylen);
-        if (b->key) {
-            memcpy(b->key, key, keylen);
-            b->keylen = keylen;
-            b->seen = now;
-            reverse_coa_route_ref(route);
-            b->route = route;
-            if (hash_insert(sessionbinds, b->key, keylen, b)) {
-                sessionbindcount++;
-                b = NULL;
-            } else
-                sessionbindfree(b);
-        } else
-            free(b);
-    }
     if (b)
+        b->key = malloc(keylen);
+    if (!b || !b->key) {
+        free(b);
         debug(DBG_ERR, "sessionbindset: malloc failed");
+        pthread_mutex_unlock(&sessionbind_lock);
+        return;
+    }
+    memcpy(b->key, key, keylen);
+    b->keylen = keylen;
+    b->seen = now;
+    reverse_coa_route_ref(route);
+    b->route = route;
+    h = sessionbindhash(key, keylen);
+    b->next = sessionbinds[h];
+    sessionbinds[h] = b;
+    b->older = sessionbind_newest;
+    b->newer = NULL;
+    if (sessionbind_newest)
+        sessionbind_newest->newer = b;
+    else
+        sessionbind_oldest = b;
+    sessionbind_newest = b;
+    sessionbindcount++;
     pthread_mutex_unlock(&sessionbind_lock);
 }
 
@@ -890,13 +930,24 @@ static void sessionbindclear(const char *key, uint32_t keylen) {
     struct sessionbind *b;
 
     pthread_mutex_lock(&sessionbind_lock);
-    b = (struct sessionbind *)hash_extract(sessionbinds, key, keylen);
-    if (b) {
-        sessionbindfree(b);
-        sessionbindcount--;
-    }
+    b = sessionbindfind(key, keylen);
+    if (b)
+        sessionbindremove(b);
     pthread_mutex_unlock(&sessionbind_lock);
 }
+
+/* for the tests */
+void _internal_sessionbindset(struct reverse_coa_route *route, const char *key, uint32_t keylen) { sessionbindset(route, key, keylen); }
+void _internal_sessionbindclear(const char *key, uint32_t keylen) { sessionbindclear(key, keylen); }
+int _internal_sessionbindfind(const char *key, uint32_t keylen) {
+    int found;
+
+    pthread_mutex_lock(&sessionbind_lock);
+    found = sessionbindfind(key, keylen) != NULL;
+    pthread_mutex_unlock(&sessionbind_lock);
+    return found;
+}
+uint32_t _internal_sessionbindcount(void) { return sessionbindcount; }
 
 /* called for requests from a client registered for reverse coa (msg only) and for the
    access-accept going back to it (msg and reply): Acct-Session-Id from the request,
@@ -906,7 +957,7 @@ void sessionbind(struct client *client, struct radmsg *msg, struct radmsg *reply
     struct tlv *attr;
     int len;
 
-    if (!client || !client->reverse_coa_route || !sessionbinds)
+    if (!client || !client->reverse_coa_route)
         return;
     if (reply) {
         if (reply->code == RAD_Access_Accept && (len = sessionbindkey(msg, reply, RAD_Attr_CUI, key, sizeof(key))) > 0)
@@ -953,7 +1004,7 @@ static int try_send_to_bound_client(struct server *server, struct request *origi
         if (len <= 0)
             continue;
         pthread_mutex_lock(&sessionbind_lock);
-        b = (struct sessionbind *)hash_read(sessionbinds, key, len);
+        b = sessionbindfind(key, len);
         if (b) {
             route = b->route;
             reverse_coa_route_ref(route);
