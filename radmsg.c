@@ -137,7 +137,7 @@ struct tlv *radmsg_getexttype(struct radmsg *msg, struct extattrtype type) {
         return NULL;
 
     for (node = list_first(tlvs); node; node = list_next(node)) {
-        if (((struct tlv *)node->data)->v[0] == type.s) {
+        if (((struct tlv *)node->data)->l > 0 && ((struct tlv *)node->data)->v[0] == type.s) {
             tlv = (struct tlv *)node->data;
             break;
         }
