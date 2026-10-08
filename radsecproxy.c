@@ -1,7 +1,8 @@
 /* Copyright (c) 2007-2009, UNINETT AS
  * Copyright (c) 2010-2013,2015-2016, NORDUnet A/S
  * Copyright (c) 2023, SWITCH
- * Copyright (c) 2026, Nova Labs */
+ * Copyright (c) 2026, Nova Labs
+ * Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
 /* For UDP there is one server instance consisting of udpserverrd and udpserverth
@@ -222,9 +223,14 @@ struct client *addclient(struct clsrvconf *conf, int sock,
 
     new->conf = conf;
     new->sock = sock;
-    /* set addr before register_reverse_coa_client so any concurrent
-       lookup that finds the new client via realm_reverse_coa_lock never dereferences
-       a NULL addr */
+    /* udp entries come and go with source ports, so they share the block's token */
+    if (conf->type == RAD_UDP) {
+        if (!conf->token[0] && !reverse_coa_newtoken(conf->token))
+            goto out_undo_list;
+        memcpy(new->token, conf->token, sizeof(new->token));
+    } else if (!reverse_coa_newtoken(new->token))
+        goto out_undo_list;
+    /* addr must be set before the client is registered for reverse coa */
     if (from) {
         new->addr = addr_copy((struct sockaddr *)from);
         if (!new->addr) {
@@ -238,17 +244,10 @@ struct client *addclient(struct clsrvconf *conf, int sock,
     else
         new->replyq = newqueue();
     pthread_mutex_init(&new->lock, NULL);
-    if (conf->reverse_coa_realms || conf->nas_identifier) {
-        new->reverse_coa_rqs = calloc(MAX_REQUESTS, sizeof(struct rqout));
-        if (!new->reverse_coa_rqs) {
-            debug(DBG_ERR, "malloc failed for reverse_coa_rqs");
-            goto out_undo_client;
-        }
+    if (conf->reverse_coa_realms || conf->nas_identifier || conf->add_operator_nas_id) {
         new->reverse_coa_route = reverse_coa_route_new(new);
         if (!new->reverse_coa_route) {
-            debug(DBG_ERR, "malloc failed for reverse_coa_route");
-            free(new->reverse_coa_rqs);
-            new->reverse_coa_rqs = NULL;
+            debug(DBG_ERR, "malloc failed");
             goto out_undo_client;
         }
         register_reverse_coa_client(new);
@@ -260,10 +259,7 @@ struct client *addclient(struct clsrvconf *conf, int sock,
 
 out_undo_client:
     pthread_mutex_destroy(&new->lock);
-    /* only destroy replyq if we own it. udp clients share the
-       static server_replyq via addclientudp; tearing it down here would break
-       all udp traffic on this instance. other transports get a queue from
-       newqueue() in the else branch above, which is safe to remove. */
+    /* udp clients share server_replyq, see addclientudp() */
     if (!conf->pdef->addclient)
         removequeue(new->replyq);
 out_undo_list:
@@ -362,12 +358,16 @@ void freeserver(struct server *server, uint8_t destroymutex) {
     if (server->ssl) {
         SSL_free(server->ssl);
     }
-    drain_coa_dedup(server);
+    if (server->reverse_coa_seen) {
+        drain_coa_dedup(server);
+        free(server->reverse_coa_seen);
+        if (destroymutex)
+            pthread_mutex_destroy(&server->reverse_coa_lock);
+    }
     if (destroymutex) {
         pthread_mutex_destroy(&server->lock);
         pthread_cond_destroy(&server->newrq_cond);
         pthread_mutex_destroy(&server->newrq_mutex);
-        pthread_mutex_destroy(&server->reverse_coa_lock);
     }
     pthread_mutex_unlock(removeclientrqs_sendrq_freeserver_lock());
     free(server);
@@ -431,9 +431,16 @@ int addserver(struct clsrvconf *conf, const char *dynamiclookuparg) {
         goto err_newrq_mutex;
     }
 
-    if (pthread_mutex_init(&conf->servers->reverse_coa_lock, NULL)) {
-        debugerrno(errno, DBG_ERR, "mutex init failed");
-        goto err_newrq_cond;
+    if (conf->accept_reverse_coa) {
+        if (pthread_mutex_init(&conf->servers->reverse_coa_lock, NULL)) {
+            debugerrno(errno, DBG_ERR, "mutex init failed");
+            goto err_newrq_cond;
+        }
+        conf->servers->reverse_coa_seen = calloc(MAX_REQUESTS, sizeof(struct coa_dedup_slot));
+        if (!conf->servers->reverse_coa_seen) {
+            debug(DBG_ERR, "malloc failed");
+            goto err_reverse_coa_lock;
+        }
     }
 
     conf->servers->state =
@@ -453,6 +460,8 @@ int addserver(struct clsrvconf *conf, const char *dynamiclookuparg) {
     pthread_mutex_unlock(conf->lock);
     return 1;
 
+err_reverse_coa_lock:
+    pthread_mutex_destroy(&conf->servers->reverse_coa_lock);
 err_newrq_cond:
     pthread_cond_destroy(&conf->servers->newrq_cond);
 err_newrq_mutex:
@@ -499,6 +508,8 @@ void freerq(struct request *rq) {
         radmsg_free(rq->msg);
     if (rq->to_override)
         free(rq->to_override);
+    if (rq->origin)
+        freerq(rq->origin);
     pthread_mutex_destroy(&rq->refmutex);
     free(rq);
 }
@@ -1330,7 +1341,7 @@ static void log_accounting_resp(struct client *from, struct radmsg *msg, char *u
  * @param msg 
  * @return 1 if ok, 0 if failed (i.e. memory allocation error)
  */
-static int ensuremsgauthfront(struct radmsg *msg) {
+int ensuremsgauthfront(struct radmsg *msg) {
     static uint8_t msgauth[] = {RAD_Attr_Message_Authenticator, 0};
 
     dorewriterm(msg, msgauth, NULL, 0);
@@ -1353,13 +1364,12 @@ int radsrv(struct request *rq) {
     struct client *from = rq->from;
     int ttlres, result;
     char tmp[INET6_ADDRSTRLEN];
+    uint8_t rqauth[16], *rqauthp = NULL;
 
-    uint8_t *rqauth_for_parse = NULL;
-    uint8_t rqauth_buf[16];
-    if (lookup_reverse_coa_rqauth(from, rq->buf, rq->buflen, rqauth_buf))
-        rqauth_for_parse = rqauth_buf;
-
-    msg = buf2radmsg(rq->buf, rq->buflen, from->conf->secret, from->conf->secret_len, rqauth_for_parse);
+    /* a reverse coa response is verified against the request we sent */
+    if (lookup_reverse_coa_rqauth(from, rq->buf, rq->buflen, rqauth))
+        rqauthp = rqauth;
+    msg = buf2radmsg(rq->buf, rq->buflen, from->conf->secret, from->conf->secret_len, rqauthp);
 
     if (!msg) {
         debug_limit(DBG_NOTICE, "radsrv: message decode error (code %d, id %d ?) from %s (%s)",
@@ -1399,12 +1409,7 @@ int radsrv(struct request *rq) {
     debug(DBG_DBG, "radsrv: code %d, id %d", msg->code, msg->id);
 
     if (IS_COA_RESPONSE(msg->code)) {
-        if (forward_coa_response(from, msg)) {
-            debug(DBG_DBG, "radsrv: forwarded reverse coa response");
-            goto exit;
-        }
-        debug(DBG_WARN, "radsrv: %s (id %d) from %s did not match any pending reverse-coa request, dropping",
-              radmsgtype2string(msg->code), msg->id, from->conf->name);
+        forward_coa_response(from, msg);
         goto exit;
     }
 
@@ -1425,36 +1430,37 @@ int radsrv(struct request *rq) {
         goto exit;
     }
 
-    if (IS_COA_REQUEST(msg->code)) {
-        if (!from->conf->accept_coa) {
-            debug_limit(DBG_INFO, "radsrv: %s from %s (%s) not authorized (acceptCoA not set), NAK",
-                        radmsgtype2string(msg->code), from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
-            respond(rq, coa_nak_code(msg->code), make_error_cause_tlv(RAD_Err_Request_Not_Routable), 1);
-            goto exit;
-        }
+    /* rfc 8559 4.3.1: a coa request from a client that is not a known dynamic
+       authorization client is refused with the same code as an unroutable one */
+    if (IS_COA_REQUEST(msg->code) && !from->conf->accept_coa) {
+        debug_limit(DBG_INFO, "radsrv: %s (id %d) from %s (%s) refused, acceptCoA not enabled",
+                    radmsgtype2string(msg->code), msg->id, from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
+        respond(rq, coa_nak_code(msg->code), make_error_cause_tlv(RAD_Err_Request_Not_Routable), 1);
+        goto exit;
+    }
 
-        /* the staleness window must equal the duplicate-detection window */
-        if (!event_timestamp_fresh(radmsg_gettype(msg, RAD_Attr_Event_Timestamp), from->conf->dupinterval)) {
-            debug_limit(DBG_NOTICE, "radsrv: stale event-timestamp in %s (id %d) from %s (%s), discarding",
-                        radmsgtype2string(msg->code), msg->id, from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
+    if ((from->conf->reqmsgauth || from->conf->reqmsgauthproxy) && (from->conf->type == RAD_UDP || from->conf->type == RAD_TCP) &&
+        (msg->code == RAD_Access_Request || IS_COA_REQUEST(msg->code))) {
+        if (msg->authstate != RSP_RADMSG_MSGAUTH_VALID &&
+            (from->conf->reqmsgauth || (from->conf->reqmsgauthproxy && radmsg_gettype(msg, RAD_Attr_Proxy_State) != NULL))) {
+            debug_limit(DBG_INFO, "radsrv: ignoring request from client %s (%s), missing required message-authenticator", from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
             goto exit;
         }
-    } else {
-        if ((from->conf->reqmsgauth || from->conf->reqmsgauthproxy) && (from->conf->type == RAD_UDP || from->conf->type == RAD_TCP) &&
-            msg->code == RAD_Access_Request) {
-            if (msg->authstate != RSP_RADMSG_MSGAUTH_VALID &&
-                (from->conf->reqmsgauth || (from->conf->reqmsgauthproxy && radmsg_gettype(msg, RAD_Attr_Proxy_State) != NULL))) {
-                debug_limit(DBG_INFO, "radsrv: ignoring request from client %s (%s), missing required message-authenticator", from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
-                goto exit;
-            }
-        }
+    }
 
-        if (options.verifyeap &&
-            msg->code == RAD_Access_Request && !verifyeapformat(msg)) {
-            debug_limit(DBG_WARN, "radsrv: eap format error from %s (%s), forcing access-reject", from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
-            respond(rq, RAD_Access_Reject, NULL, 1);
-            goto exit;
-        }
+    /* rfc 5176 6.3: the same window as duplicate detection */
+    if (IS_COA_REQUEST(msg->code) && from->conf->dupinterval &&
+        !event_timestamp_fresh(radmsg_gettype(msg, RAD_Attr_Event_Timestamp), from->conf->dupinterval)) {
+        debug_limit(DBG_NOTICE, "radsrv: stale event-timestamp in %s (id %d) from %s (%s), ignoring",
+                    radmsgtype2string(msg->code), msg->id, from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
+        goto exit;
+    }
+
+    if (options.verifyeap &&
+        msg->code == RAD_Access_Request && !verifyeapformat(msg)) {
+        debug_limit(DBG_WARN, "radsrv: eap format error from %s (%s), forcing access-reject", from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
+        respond(rq, RAD_Access_Reject, NULL, 1);
+        goto exit;
     }
 
     if (from->conf->rewritein && (result = dorewrite(msg, from->conf->rewritein)) < 1) {
@@ -1480,14 +1486,16 @@ int radsrv(struct request *rq) {
 
         to = findcoaserver(realms, &realm, msg, &nasmismatch);
         if (!to) {
-            if (!realm)
-                debug_limit(DBG_INFO, "radsrv: %s (id %d) from %s (%s), no operator-name realm route",
-                            radmsgtype2string(msg->code), msg->id, from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
-            else if (!nasmismatch)
-                debug_limit(DBG_INFO, "radsrv: %s (id %d) from %s (%s), realm %s has no usable coaServer",
-                            radmsgtype2string(msg->code), msg->id, from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)), realm->name);
-            respond(rq, coa_nak_code(msg->code),
-                    make_error_cause_tlv(nasmismatch ? RAD_Err_NAS_Identification_Mismatch : RAD_Err_Request_Not_Routable), 1);
+            /* no coaServer takes it, try the reverse coa routes */
+            int errorcause = nasmismatch ? RAD_Err_NAS_Identification_Mismatch : route_reverse_coa_from_client(rq);
+            if (!errorcause) {
+                debug(DBG_INFO, "radsrv: %s (id %d) from %s (%s) sent down a reverse coa route",
+                      radmsgtype2string(msg->code), msg->id, from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
+                goto exit;
+            }
+            debug_limit(DBG_INFO, "radsrv: no route for %s (id %d) from %s (%s), Error-Cause %d",
+                        radmsgtype2string(msg->code), msg->id, from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)), errorcause);
+            respond(rq, coa_nak_code(msg->code), make_error_cause_tlv(errorcause), 1);
             goto exit;
         }
     } else {
@@ -1606,7 +1614,13 @@ int radsrv(struct request *rq) {
         }
     }
 
-    if (msg->code == RAD_Access_Request &&
+    if (from->conf->add_operator_nas_id && (msg->code == RAD_Access_Request || msg->code == RAD_Accounting_Request) &&
+        !add_operator_nas_identifier(from, msg)) {
+        debug(DBG_WARN, "radsrv: adding operator-nas-identifier failed, ignoring request");
+        goto rmclrqexit;
+    }
+
+    if ((msg->code == RAD_Access_Request || IS_COA_REQUEST(msg->code)) &&
         !ensuremsgauthfront(msg))
         goto rmclrqexit;
 
@@ -1786,19 +1800,12 @@ int replyh(struct server *server, uint8_t *buf, int len) {
         goto errunlock;
     }
 
-    if (IS_COA_RESPONSE(msg->code) &&
-        !event_timestamp_fresh(radmsg_gettype(msg, RAD_Attr_Event_Timestamp), rqout->rq->from->conf->dupinterval)) {
-        debug(DBG_INFO, "replyh: stale event-timestamp in %s (id %d) from %s, discarding",
-              radmsgtype2string(msg->code), msg->id, server->conf->name);
-        goto errunlock;
-    }
-
     debug(DBG_DBG, "got %s message with id %d", radmsgtype2string(msg->code), msg->id);
 
     if (msg->code == RAD_CoA_NAK || msg->code == RAD_Disconnect_NAK) {
         struct tlv *errorcause = radmsg_gettype(msg, RAD_Attr_Error_Cause);
         if (errorcause && errorcause->l == 4)
-            debug(DBG_INFO, "replyh: %s (id %d) from %s carries Error-Cause=%u",
+            debug(DBG_INFO, "replyh: %s (id %d) from %s with Error-Cause %u",
                   radmsgtype2string(msg->code), msg->id, server->conf->name, tlv2longint(errorcause));
     }
 
@@ -1920,7 +1927,7 @@ int replyh(struct server *server, uint8_t *buf, int len) {
         goto errunlock;
     }
 
-    if ((msg->code == RAD_Access_Challenge || msg->code == RAD_Access_Accept || msg->code == RAD_Access_Reject) &&
+    if ((msg->code == RAD_Access_Challenge || msg->code == RAD_Access_Accept || msg->code == RAD_Access_Reject || IS_COA_RESPONSE(msg->code)) &&
         !ensuremsgauthfront(msg))
         goto errunlock;
 
@@ -1996,9 +2003,6 @@ void *clientwr(void *arg) {
 
     assert(server);
     conf = server->conf;
-    int statsrv_period = conf->accept_reverse_coa
-                             ? STATUS_SERVER_PERIOD_REVERSE_COA
-                             : STATUS_SERVER_PERIOD;
 
 #define ZZZ 900
 
@@ -2052,13 +2056,13 @@ void *clientwr(void *arg) {
             rnd /= 32;
             if (conf->statusserver != RSP_STATSRV_OFF) {
                 secs = server->lastrcv.tv_sec > laststatsrv.tv_sec ? server->lastrcv.tv_sec : laststatsrv.tv_sec;
-                if (now.tv_sec - secs > statsrv_period)
+                if (now.tv_sec - secs > STATUS_SERVER_PERIOD)
                     secs = now.tv_sec;
-                if (!timeout.tv_sec || timeout.tv_sec > secs + statsrv_period + rnd)
-                    timeout.tv_sec = secs + statsrv_period + rnd;
+                if (!timeout.tv_sec || timeout.tv_sec > secs + STATUS_SERVER_PERIOD + rnd)
+                    timeout.tv_sec = secs + STATUS_SERVER_PERIOD + rnd;
             } else {
-                if (!timeout.tv_sec || timeout.tv_sec > now.tv_sec + statsrv_period + rnd)
-                    timeout.tv_sec = now.tv_sec + statsrv_period + rnd;
+                if (!timeout.tv_sec || timeout.tv_sec > now.tv_sec + STATUS_SERVER_PERIOD + rnd)
+                    timeout.tv_sec = now.tv_sec + STATUS_SERVER_PERIOD + rnd;
             }
 #if 0
 	    if (timeout.tv_sec > now.tv_sec)
@@ -2166,8 +2170,8 @@ void *clientwr(void *arg) {
         do_resend = 0;
         if (server->state == RSP_SERVER_STATE_CONNECTED && !(conf->statusserver == RSP_STATSRV_OFF)) {
             gettimeofday(&now, NULL);
-            if ((conf->statusserver == RSP_STATSRV_ON && now.tv_sec - (server->lastrcv.tv_sec > laststatsrv.tv_sec ? server->lastrcv.tv_sec : laststatsrv.tv_sec) > statsrv_period) ||
-                ((conf->statusserver == RSP_STATSRV_MINIMAL || conf->statusserver == RSP_STATSRV_ON) && statusserver_requested && now.tv_sec - laststatsrv.tv_sec > statsrv_period) ||
+            if ((conf->statusserver == RSP_STATSRV_ON && now.tv_sec - (server->lastrcv.tv_sec > laststatsrv.tv_sec ? server->lastrcv.tv_sec : laststatsrv.tv_sec) > STATUS_SERVER_PERIOD) ||
+                ((conf->statusserver == RSP_STATSRV_MINIMAL || conf->statusserver == RSP_STATSRV_ON) && statusserver_requested && now.tv_sec - laststatsrv.tv_sec > STATUS_SERVER_PERIOD) ||
                 (conf->statusserver == RSP_STATSRV_AUTO && server->lastreply.tv_sec >= laststatsrv.tv_sec)) {
 
                 laststatsrv = now;
@@ -2462,7 +2466,7 @@ struct realm *addrealm(struct list *realmlist, char *value, char **servers, char
 
         for (coaentry = list_first(realm->coasrvconfs); coaentry; coaentry = list_next(coaentry))
             if (((struct clsrvconf *)coaentry->data)->dynamiclookupcommand)
-                debug(DBG_WARN, "addrealm: coaServer %s for realm %s has a DynamicLookupCommand, which CoA routing does not support; it will NAK unroutable until it is a live server",
+                debug(DBG_WARN, "addrealm: coaServer %s for realm %s has DynamicLookupCommand, not supported for coa",
                       ((struct clsrvconf *)coaentry->data)->name, value);
     }
 
@@ -2790,7 +2794,6 @@ void freeclsrvconf(struct clsrvconf *conf) {
         free(conf->confrewriteout);
         free(conf->sniservername);
         free(conf->servername);
-        free(conf->nas_identifier);
         if (conf->rewriteusername) {
             if (conf->rewriteusername->regex)
                 regfree(conf->rewriteusername->regex);
@@ -3015,10 +3018,10 @@ int confclient_cb(struct gconffile **cf, void *arg, char *block, char *opt, char
             "CertificateNameCheck", CONF_BLN, &conf->certnamecheck,
             "CertificateCNCheck", CONF_BLN, &conf->certcncheck,
             "ServerName", CONF_STR, &conf->servername,
+#endif
             "reverseCoARealm", CONF_MSTR, &conf->reverse_coa_realms,
             "NASidentifier", CONF_STR, &conf->nas_identifier,
             "reverseCoATimeout", CONF_LINT, &conf->reverse_coa_timeout,
-#endif
             "CoAPort", CONF_LINT, &coaport,
             "DuplicateInterval", CONF_LINT, &dupinterval,
             "idleTimeout", CONF_LINT, &conf->idletimeout,
@@ -3034,6 +3037,7 @@ int confclient_cb(struct gconffile **cf, void *arg, char *block, char *opt, char
             "requireMessageAuthenticatorProxy", CONF_BLN, &conf->reqmsgauthproxy,
             "ProtocolError", CONF_BLN, &conf->protocolerror,
             "acceptCoA", CONF_BLN, &conf->accept_coa,
+            "addOperatorNASIdentifier", CONF_BLN, &conf->add_operator_nas_id,
             NULL))
         debugx(1, DBG_ERR, "configuration error");
 
@@ -3078,41 +3082,17 @@ int confclient_cb(struct gconffile **cf, void *arg, char *block, char *opt, char
         conf->addttl = (uint8_t)addttl;
     }
 
-#if defined(RADPROT_TLS) || defined(RADPROT_DTLS)
-    if (conf->reverse_coa_realms || conf->nas_identifier) {
-        if (conf->reverse_coa_timeout == 0)
-            conf->reverse_coa_timeout = 30;
-        else if (conf->reverse_coa_timeout < 10) {
-            debug(DBG_WARN, "reverseCoATimeout %ld too low, using minimum 10s "
-                            "(must outlast upstream RetryInterval x RetryCount for %s)",
-                  conf->reverse_coa_timeout, conf->name);
-            conf->reverse_coa_timeout = 10;
-        } else if (conf->reverse_coa_timeout > 120) {
-            debug(DBG_WARN, "reverseCoATimeout %ld too high, using maximum 120s",
-                  conf->reverse_coa_timeout);
-            conf->reverse_coa_timeout = 120;
-        }
-    } else if (conf->reverse_coa_timeout != 0) {
-        debug(DBG_WARN, "reverseCoATimeout %ld on client %s has no effect: "
-                        "reverseCoARealm or NASidentifier is required",
-              conf->reverse_coa_timeout, conf->name);
-    }
-#endif
+    if (conf->reverse_coa_timeout == 0)
+        conf->reverse_coa_timeout = 30;
+    else if (conf->reverse_coa_timeout < 10 || conf->reverse_coa_timeout > 120)
+        debugx(1, DBG_ERR, "error in block %s, value of option reverseCoATimeout is %ld, must be 10-120", block, conf->reverse_coa_timeout);
 
-    if (coaport == LONG_MIN) {
+    if (coaport == LONG_MIN)
         conf->coaport = 3799;
-    } else if (coaport < 1 || coaport > 65535) {
-        debugx(1, DBG_ERR, "config error: CoAPort %ld out of range (1-65535) for client %s",
-               coaport, conf->name);
-    } else {
+    else if (coaport < 1 || coaport > 65535)
+        debugx(1, DBG_ERR, "error in block %s, value of option CoAPort is %ld, must be 1-65535", block, coaport);
+    else
         conf->coaport = (uint16_t)coaport;
-    }
-
-    if (coaport != LONG_MIN && conf->type != RAD_UDP) {
-        debug(DBG_WARN, "CoAPort %ld on client %s ignored: only applies to UDP clients "
-                        "(TLS/DTLS use the existing tunnel)",
-              coaport, conf->name);
-    }
 
     if (!conf->confrewritein)
         conf->confrewritein = rewriteinalias;
@@ -3394,6 +3374,9 @@ int confserver_cb(struct gconffile **cf, void *arg, char *block, char *opt, char
         goto errexit;
     }
 
+    /* a server sending reverse coa needs the connection watched */
+    if (conf->accept_reverse_coa && !statusserver)
+        conf->statusserver = RSP_STATSRV_ON;
     if (statusserver) {
         if (strcasecmp(statusserver, "Off") == 0)
             conf->statusserver = RSP_STATSRV_OFF;

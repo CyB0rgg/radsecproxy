@@ -1,23 +1,36 @@
 /* Copyright (c) 2026, Nova Labs */
+/* Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
+#include "../debug.h"
+#include "../list.h"
 #include "../radmsg.h"
 #include "../radsecproxy.h"
+#include "../reverse_coa.h"
+#include "../udp.h"
+#include "../util.h"
 #include <arpa/inet.h>
+#include <netinet/in.h>
 #include <openssl/evp.h>
-#include <openssl/md5.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
-/* Forward declaration: defined in udp.c, not in the public header */
-struct client *find_reverse_coa_client_for_response(struct clsrvconf *p, int sock,
-                                                    struct sockaddr *from,
-                                                    const uint8_t *buf, int len);
+extern void removequeue(struct gqueue *q); /* not in a header */
 
 int numtests = 0;
+
+static uint8_t *secret = (uint8_t *)"testing123";
+static int secretlen = 10;
+static char *literalrealm[] = {"Example.COM", NULL};
+static char *regexprealm[] = {"/\\.example\\.net$/", NULL};
+
+/* the last packet sent to the originating server */
+static uint8_t *sentbuf;
+static int sentlen, sentcount;
 
 void test_ok(int condition, char *msg) {
     if (!condition)
@@ -31,447 +44,467 @@ void test_eq(int expected, int actual, char *msg) {
     printf("ok %d - %s (expected %d, got %d)\n", ++numtests, msg, expected, actual);
 }
 
+static int stubradput(struct server *server, unsigned char *buf, int len) {
+    free(sentbuf);
+    sentbuf = malloc(len);
+    memcpy(sentbuf, buf, len);
+    sentlen = len;
+    sentcount++;
+    return 1;
+}
+
+static struct protodefs stubpdef = {.clientradput = stubradput};
+
+/* a CoA-ACK with its response authenticator over rqauth, with a Proxy-State attribute when asked */
+static int coaack(uint8_t *pkt, uint8_t id, int withattr, const uint8_t *rqauth) {
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    int len = withattr ? 26 : 20;
+
+    memset(pkt, 0, 26);
+    pkt[0] = RAD_CoA_ACK;
+    pkt[1] = id;
+    pkt[3] = len;
+    if (withattr) {
+        pkt[20] = RAD_Attr_Proxy_State;
+        pkt[21] = 6;
+        memcpy(pkt + 22, "\xde\xad\xbe\xef", 4);
+    }
+    EVP_DigestInit_ex(ctx, EVP_md5(), NULL);
+    EVP_DigestUpdate(ctx, pkt, 4);
+    EVP_DigestUpdate(ctx, rqauth, 16);
+    EVP_DigestUpdate(ctx, pkt + 20, len - 20);
+    EVP_DigestUpdate(ctx, secret, secretlen);
+    EVP_DigestFinal_ex(ctx, pkt + 4, NULL);
+    EVP_MD_CTX_free(ctx);
+    return len;
+}
+
+/* a udp client block with one entry, registered for reverse coa */
+static struct client *newclient(char *name, char *nasid, char **realms, char *addr) {
+    struct clsrvconf *conf = calloc(1, sizeof(struct clsrvconf));
+    struct client *client = calloc(1, sizeof(struct client));
+    struct sockaddr_in sin = {.sin_family = AF_INET};
+
+    conf->name = name;
+    conf->type = RAD_UDP;
+    conf->secret = secret;
+    conf->secret_len = secretlen;
+    conf->nas_identifier = nasid;
+    conf->reverse_coa_realms = realms;
+    conf->coaport = 3799;
+    conf->reverse_coa_timeout = 30;
+    conf->lock = malloc(sizeof(pthread_mutex_t));
+    pthread_mutex_init(conf->lock, NULL);
+    conf->clients = list_create();
+    list_push(conf->clients, client);
+    inet_pton(AF_INET, addr, &sin.sin_addr);
+    client->conf = conf;
+    client->addr = addr_copy((struct sockaddr *)&sin);
+    pthread_mutex_init(&client->lock, NULL);
+    client->replyq = newqueue();
+    client->reverse_coa_route = reverse_coa_route_new(client);
+    register_reverse_coa_client(client);
+    return client;
+}
+
+static void freeclient(struct client *client) {
+    unregister_reverse_coa_client(client);
+    free_reverse_coa_rqs(client);
+    reverse_coa_route_deref(client->reverse_coa_route);
+    removequeue(client->replyq);
+    pthread_mutex_destroy(&client->lock);
+    free(client->addr);
+    list_free(client->conf->clients);
+    pthread_mutex_destroy(client->conf->lock);
+    free(client->conf->lock);
+    free(client->conf);
+    free(client);
+}
+
+/* a server with acceptReverseCoA, answered through stubradput */
+static struct server *newserver(char *name) {
+    struct server *server = calloc(1, sizeof(struct server));
+
+    server->conf = calloc(1, sizeof(struct clsrvconf));
+    server->conf->name = name;
+    server->conf->type = RAD_TLS;
+    server->conf->secret = secret;
+    server->conf->secret_len = secretlen;
+    server->conf->pdef = &stubpdef;
+    server->conf->accept_reverse_coa = 1;
+    server->reverse_coa_seen = calloc(MAX_REQUESTS, sizeof(struct coa_dedup_slot));
+    pthread_mutex_init(&server->reverse_coa_lock, NULL);
+    return server;
+}
+
+static void freeserver(struct server *server) {
+    drain_coa_dedup(server);
+    free(server->reverse_coa_seen);
+    pthread_mutex_destroy(&server->reverse_coa_lock);
+    free(server->conf);
+    free(server);
+}
+
+/* a request with Operator-Name and NAS-Identifier when given */
+static struct radmsg *request(uint8_t code, uint8_t id, char *opname, char *nasid) {
+    struct radmsg *msg = radmsg_init(code, id, NULL);
+
+    if (opname)
+        radmsg_add(msg, maketlv(RAD_Attr_Operator_Name, strlen(opname), opname), 0);
+    if (nasid)
+        radmsg_add(msg, maketlv(RAD_Attr_NAS_Identifier, strlen(nasid), nasid), 0);
+    return msg;
+}
+
+/* routes msg from server and frees it */
+static int dispatch(struct server *server, struct radmsg *msg) {
+    int result = _internal_dispatch_reverse_coa(server, NULL, msg);
+
+    radmsg_free(msg);
+    return result;
+}
+
+/* the request queued for the client, NULL if none */
+static struct request *queued(struct client *client) {
+    return (struct request *)list_shift(client->replyq->entries);
+}
+
 int main(int argc, char *argv[]) {
-    /* test: IS_COA_REQUEST classifies correctly */
-    test_ok(IS_COA_REQUEST(RAD_CoA_Request), "IS_COA_REQUEST(CoA-Request)");
-    test_ok(IS_COA_REQUEST(RAD_Disconnect_Request), "IS_COA_REQUEST(Disconnect-Request)");
-    test_ok(!IS_COA_REQUEST(RAD_CoA_ACK), "!IS_COA_REQUEST(CoA-ACK)");
-    test_ok(!IS_COA_REQUEST(RAD_CoA_NAK), "!IS_COA_REQUEST(CoA-NAK)");
-    test_ok(!IS_COA_REQUEST(RAD_Access_Request), "!IS_COA_REQUEST(Access-Request)");
-    test_ok(!IS_COA_REQUEST(RAD_Accounting_Request), "!IS_COA_REQUEST(Accounting-Request)");
+    uint8_t rqauth[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    struct client *nas, *proxy;
+    struct server *server;
 
-    /* test: IS_COA_RESPONSE classifies correctly */
-    test_ok(IS_COA_RESPONSE(RAD_CoA_ACK), "IS_COA_RESPONSE(CoA-ACK)");
-    test_ok(IS_COA_RESPONSE(RAD_CoA_NAK), "IS_COA_RESPONSE(CoA-NAK)");
-    test_ok(IS_COA_RESPONSE(RAD_Disconnect_ACK), "IS_COA_RESPONSE(Disconnect-ACK)");
-    test_ok(IS_COA_RESPONSE(RAD_Disconnect_NAK), "IS_COA_RESPONSE(Disconnect-NAK)");
-    test_ok(!IS_COA_RESPONSE(RAD_CoA_Request), "!IS_COA_RESPONSE(CoA-Request)");
-    test_ok(!IS_COA_RESPONSE(RAD_Access_Accept), "!IS_COA_RESPONSE(Access-Accept)");
+    debug_init("t_reverse_coa");
+    init_reverse_coa();
 
-    /* test: operator-name attribute encoding */
+    /* response authenticator */
     {
-        uint8_t auth[20] = {0};
-        struct radmsg *msg = radmsg_init(RAD_CoA_Request, 1, auth);
-        test_ok(msg != NULL, "radmsg_init for operator-name test");
-        if (msg) {
-            char opname[] = "1example.org";
-            struct tlv *attr = maketlv(RAD_Attr_Operator_Name, strlen(opname), opname);
-            test_ok(attr != NULL, "maketlv Operator-Name");
-            if (attr) {
-                int added = radmsg_add(msg, attr, 0);
-                test_ok(added, "radmsg_add Operator-Name");
+        uint8_t pkt[26], other[16];
+        int len = coaack(pkt, 7, 0, rqauth);
 
-                struct tlv *retrieved = radmsg_gettype(msg, RAD_Attr_Operator_Name);
-                test_ok(retrieved != NULL, "radmsg_gettype Operator-Name");
-                if (retrieved) {
-                    test_eq(strlen(opname), retrieved->l, "Operator-Name length");
-                    test_ok(memcmp(retrieved->v, opname, retrieved->l) == 0, "Operator-Name value");
-                }
-            }
-            radmsg_free(msg);
-        }
+        test_ok(radmsg_validate_response_auth(pkt, len, secret, secretlen, rqauth), "correct authenticator");
+        memcpy(other, rqauth, 16);
+        other[0] ^= 0xff;
+        test_ok(!radmsg_validate_response_auth(pkt, len, secret, secretlen, other), "wrong request authenticator");
+        test_ok(!radmsg_validate_response_auth(pkt, 19, secret, secretlen, rqauth), "short");
+        memset(pkt + 20, 0xff, 6);
+        test_ok(radmsg_validate_response_auth(pkt, 20, secret, secretlen, rqauth), "declared length used");
+        test_ok(!radmsg_validate_response_auth(pkt, 26, secret, secretlen, rqauth), "trailing bytes fail");
+        len = coaack(pkt, 8, 1, rqauth);
+        test_ok(radmsg_validate_response_auth(pkt, len, secret, secretlen, rqauth), "with attribute");
     }
 
-    /* test: operator-nas-identifier as extended attr 241.8 per rfc 8559 */
+    /* pending response lookup */
     {
-        uint8_t auth[20] = {0};
-        struct radmsg *msg = radmsg_init(RAD_CoA_Request, 1, auth);
-        test_ok(msg != NULL, "radmsg_init for operator-nas-identifier test");
-        if (msg) {
-            char token[] = "nas-bldg-a";
-            uint8_t val[1 + sizeof(token) - 1];
-            val[0] = RAD_Extended_Operator_NAS_Id;
-            memcpy(val + 1, token, sizeof(token) - 1);
-            struct tlv *attr = maketlv(RAD_Attr_Extended_Type_1, sizeof(val), val);
-            test_ok(attr != NULL, "maketlv Operator-NAS-Identifier (241.8)");
-            if (attr) {
-                int added = radmsg_add(msg, attr, 0);
-                test_ok(added, "radmsg_add Operator-NAS-Identifier");
+        struct client *client = newclient("udp", NULL, NULL, "192.0.2.100");
+        struct sockaddr_in from = {.sin_family = AF_INET, .sin_port = htons(3799)};
+        struct request dummy; /* not a real request, never freed */
+        uint8_t pkt[26];
+        int len = coaack(pkt, 7, 0, rqauth);
 
-                struct tlv *retrieved = radmsg_gettype(msg, RAD_Attr_Extended_Type_1);
-                test_ok(retrieved != NULL, "radmsg_gettype Extended-Type-1");
-                if (retrieved) {
-                    test_ok(retrieved->v[0] == RAD_Extended_Operator_NAS_Id,
-                            "Operator-NAS-Identifier extended type byte");
-                    test_eq(sizeof(val), retrieved->l, "Operator-NAS-Identifier total length");
-                    test_ok(memcmp(retrieved->v + 1, token, sizeof(token) - 1) == 0,
-                            "Operator-NAS-Identifier token value");
-                }
-            }
-            radmsg_free(msg);
-        }
+        inet_pton(AF_INET, "192.0.2.100", &from.sin_addr);
+        memset(&dummy, 0, sizeof(dummy));
+        client->sock = 42;
+        client->reverse_coa_rqs = calloc(MAX_REQUESTS, sizeof(struct rqout));
+        client->reverse_coa_rqs[7].rq = &dummy;
+        memcpy(client->reverse_coa_rqs[7].sentauth, rqauth, 16); /* sentauth as send_coa_to_client stores it */
+        test_ok(findreversecoaclient(client->conf, 42, (struct sockaddr *)&from, pkt, len) == client, "response matched");
+        test_ok(!findreversecoaclient(client->conf, 99, (struct sockaddr *)&from, pkt, len), "wrong socket");
+        from.sin_addr.s_addr ^= 1;
+        test_ok(!findreversecoaclient(client->conf, 42, (struct sockaddr *)&from, pkt, len), "wrong source");
+        from.sin_addr.s_addr ^= 1;
+        client->reverse_coa_rqs[7].sentauth[0] ^= 0xff;
+        test_ok(!findreversecoaclient(client->conf, 42, (struct sockaddr *)&from, pkt, len), "other request authenticator");
+        client->reverse_coa_rqs[7].sentauth[0] ^= 0xff;
+        pkt[1] = 8;
+        test_ok(!findreversecoaclient(client->conf, 42, (struct sockaddr *)&from, pkt, len), "nothing pending for the id");
+        client->reverse_coa_rqs[7].rq = NULL;
+        freeclient(client);
     }
 
-    /* test: error-cause attribute in nak message */
+    /* token */
     {
-        uint8_t auth[20] = {0};
-        struct radmsg *msg = radmsg_init(RAD_CoA_NAK, 1, auth);
-        test_ok(msg != NULL, "radmsg_init for error-cause test");
-        if (msg) {
-            uint32_t error_cause = htonl(RAD_Err_Request_Not_Routable);
-            struct tlv *attr = maketlv(RAD_Attr_Error_Cause, 4, &error_cause);
-            test_ok(attr != NULL, "maketlv Error-Cause");
-            if (attr) {
-                int added = radmsg_add(msg, attr, 0);
-                test_ok(added, "radmsg_add Error-Cause");
+        char token[REVERSE_COA_TOKEN_LEN + 1], token2[REVERSE_COA_TOKEN_LEN + 1], parsed[REVERSE_COA_TOKEN_LEN + 1];
+        struct tlv *attr;
 
-                struct tlv *retrieved = radmsg_gettype(msg, RAD_Attr_Error_Cause);
-                test_ok(retrieved != NULL, "radmsg_gettype Error-Cause");
-                if (retrieved) {
-                    test_eq(4, retrieved->l, "Error-Cause length");
-                    uint32_t val = ntohl(*(uint32_t *)retrieved->v);
-                    test_eq(RAD_Err_Request_Not_Routable, val, "Error-Cause value");
-                }
-            }
-            radmsg_free(msg);
-        }
+        test_ok(reverse_coa_newtoken(token) && strlen(token) == REVERSE_COA_TOKEN_LEN, "token length");
+        test_ok(reverse_coa_newtoken(token2) && strcmp(token, token2) != 0, "tokens differ");
+        attr = makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, REVERSE_COA_TOKEN_LEN, token);
+        test_ok(attr && attr->l == REVERSE_COA_TOKEN_LEN + 1 && attr->v[0] == 8, "token as attribute 241.8");
+        test_ok(reverse_coa_token(attr, parsed) && !strcmp(parsed, token), "token parses");
+        freetlv(attr);
+        attr = makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, 9, (void *)"nas-1.lab");
+        test_ok(!reverse_coa_token(attr, parsed), "foreign identifier rejected");
+        freetlv(attr);
+        test_ok(!reverse_coa_token(NULL, parsed), "missing attribute rejected");
     }
 
-    /* test: radmsg2buf/buf2radmsg round-trip for coa-request with operator-name */
+    /* operator-nas-identifier */
     {
-        uint8_t auth[20] = {0};
-        struct radmsg *msg = radmsg_init(RAD_CoA_Request, 7, auth);
-        test_ok(msg != NULL, "round-trip: radmsg_init");
-        if (msg) {
-            char opname[] = "1test.realm";
-            struct tlv *attr = maketlv(RAD_Attr_Operator_Name, strlen(opname), opname);
-            radmsg_add(msg, attr, 0);
+        struct client *client = newclient("edge", NULL, NULL, "192.0.2.1");
+        struct radmsg *msg = request(RAD_Access_Request, 1, NULL, NULL);
+        struct tlv *attr;
+        struct list *ext;
+        char parsed[REVERSE_COA_TOKEN_LEN + 1];
+        uint32_t code = 0;
 
-            uint8_t *buf = NULL;
-            int len = radmsg2buf(msg, NULL, 0, &buf);
-            test_ok(len > 0, "round-trip: radmsg2buf succeeds");
-            test_ok(buf != NULL, "round-trip: buffer allocated");
-
-            if (buf && len > 0) {
-                struct radmsg *parsed = buf2radmsg(buf, len, NULL, 0, NULL);
-                test_ok(parsed != NULL, "round-trip: buf2radmsg succeeds");
-                if (parsed) {
-                    test_eq(RAD_CoA_Request, parsed->code, "round-trip: code preserved");
-                    test_eq(7, parsed->id, "round-trip: id preserved");
-
-                    struct tlv *op = radmsg_gettype(parsed, RAD_Attr_Operator_Name);
-                    test_ok(op != NULL, "round-trip: Operator-Name present");
-                    if (op) {
-                        test_eq(strlen(opname), op->l, "round-trip: Operator-Name length");
-                        test_ok(memcmp(op->v, opname, op->l) == 0,
-                                "round-trip: Operator-Name value");
-                    }
-                    radmsg_free(parsed);
-                }
-                free(buf);
-            }
-            radmsg_free(msg);
-        }
+        strcpy(client->token, "0123456789abcdef");
+        radmsg_add(msg, maketlv(RAD_Attr_User_Name, 8, (void *)"user@abc"), 0);
+        radmsg_add(msg, makeexttlv(RAD_ExtAttr_Original_Packet_Code, 4, &code), 0);
+        test_ok(add_operator_nas_identifier(client, msg) && !radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier), "nothing added without operator-name");
+        radmsg_add(msg, maketlv(RAD_Attr_Operator_Name, 12, (void *)"4EXAMPLE:XX"), 0);
+        attr = add_operator_nas_identifier(client, msg) ? radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier) : NULL;
+        test_ok(attr && reverse_coa_token(attr, parsed) && !strcmp(parsed, client->token), "added next to operator-name");
+        add_operator_nas_identifier(client, msg);
+        ext = radmsg_getalltype(msg, RAD_ExtAttr_Operator_NAS_Identifier.t);
+        test_eq(2, ext ? (int)list_count(ext) : 0, "no second operator-nas-identifier");
+        list_free(ext);
+        strip_operator_attrs(msg);
+        test_ok(!radmsg_gettype(msg, RAD_Attr_Operator_Name), "operator-name stripped");
+        test_ok(!radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier), "operator-nas-identifier stripped");
+        test_ok(radmsg_getexttype(msg, RAD_ExtAttr_Original_Packet_Code) && radmsg_gettype(msg, RAD_Attr_User_Name), "other attributes kept");
+        radmsg_free(msg);
+        freeclient(client);
     }
 
-    /* test: radmsg_copy_attrs copies coa attributes between messages */
+    /* nas address */
     {
-        uint8_t auth[20] = {0};
-        struct radmsg *src = radmsg_init(RAD_CoA_Request, 1, auth);
-        struct radmsg *dst = radmsg_init(RAD_CoA_Request, 2, auth);
-        test_ok(src != NULL && dst != NULL, "copy_attrs: init");
-        if (src && dst) {
-            char opname[] = "1copy.realm";
-            struct tlv *attr = maketlv(RAD_Attr_Operator_Name, strlen(opname), opname);
-            radmsg_add(src, attr, 0);
+        struct radmsg *msg = request(RAD_Disconnect_Request, 1, NULL, NULL);
+        struct sockaddr_storage ss;
+        uint8_t v4[4] = {10, 0, 0, 69};
+        uint8_t v6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
 
-            int copied = radmsg_copy_attrs(dst, src, RAD_Attr_Operator_Name);
-            test_eq(1, copied, "copy_attrs: copied 1 attribute");
-
-            struct tlv *retrieved = radmsg_gettype(dst, RAD_Attr_Operator_Name);
-            test_ok(retrieved != NULL, "copy_attrs: attribute present in dst");
-            if (retrieved) {
-                test_ok(memcmp(retrieved->v, opname, retrieved->l) == 0,
-                        "copy_attrs: value matches");
-            }
-
-            int none = radmsg_copy_attrs(dst, src, RAD_Attr_Error_Cause);
-            test_eq(0, none, "copy_attrs: 0 when type not present");
-        }
-        radmsg_free(src);
-        radmsg_free(dst);
+        test_ok(!reverse_coa_nas_addr(msg, &ss), "no address attribute");
+        radmsg_add(msg, maketlv(RAD_Attr_NAS_IPv6_Address, 16, v6), 0);
+        test_ok(reverse_coa_nas_addr(msg, &ss) && ss.ss_family == AF_INET6 && !memcmp(&((struct sockaddr_in6 *)&ss)->sin6_addr, v6, 16), "nas-ipv6-address");
+        radmsg_add(msg, maketlv(RAD_Attr_NAS_IP_Address, 4, v4), 0);
+        test_ok(reverse_coa_nas_addr(msg, &ss) && ss.ss_family == AF_INET && !memcmp(&((struct sockaddr_in *)&ss)->sin_addr, v4, 4) && !((struct sockaddr_in *)&ss)->sin_port, "nas-ip-address preferred");
+        radmsg_free(msg);
     }
 
-    /* test: radmsg_validate_response_auth */
+    /* nas identity */
     {
-        /* build a minimal CoA-ACK (code=44) with known fields, then compute
-           the correct response authenticator with MD5 and verify the wrapper */
-        const uint8_t secret[] = "testing123";
-        const int secret_len = 10;
-        const uint8_t req_auth[16] = {
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10};
+        struct client *client = newclient("mapped", "nas-m", NULL, "192.0.2.102");
+        struct sockaddr_in6 sin6 = {.sin6_family = AF_INET6};
+        struct radmsg *msg = request(RAD_CoA_Request, 1, NULL, NULL);
+        uint8_t v4[4] = {192, 0, 2, 102};
 
-        /* 20-byte packet: code=44 id=7 length=20 auth=zeros(placeholder) */
-        uint8_t pkt[20];
-        pkt[0] = 44; /* CoA-ACK */
-        pkt[1] = 7;  /* id */
-        pkt[2] = 0;
-        pkt[3] = 20;            /* length = 20 */
-        memset(pkt + 4, 0, 16); /* will be replaced by computed auth */
-
-        /* compute: MD5(code||id||length||req_auth||secret) */
-        EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-        const EVP_MD *md5 = EVP_md5();
-        uint8_t computed[16];
-        EVP_DigestInit_ex(ctx, md5, NULL);
-        EVP_DigestUpdate(ctx, pkt, 4);       /* code+id+length */
-        EVP_DigestUpdate(ctx, req_auth, 16); /* request authenticator */
-        /* no attributes in this packet */
-        EVP_DigestUpdate(ctx, secret, secret_len);
-        EVP_DigestFinal_ex(ctx, computed, NULL);
-        EVP_MD_CTX_free(ctx);
-
-        memcpy(pkt + 4, computed, 16);
-
-        test_ok(radmsg_validate_response_auth(pkt, 20, secret, secret_len, req_auth) == 1,
-                "validate_response_auth: correct auth passes");
-        test_ok(radmsg_validate_response_auth(pkt, 20, (const uint8_t *)"wrongsecret", 11, req_auth) == 0,
-                "validate_response_auth: wrong secret fails");
-
-        uint8_t bad_req_auth[16];
-        memcpy(bad_req_auth, req_auth, 16);
-        bad_req_auth[0] ^= 0xff;
-        test_ok(radmsg_validate_response_auth(pkt, 20, secret, secret_len, bad_req_auth) == 0,
-                "validate_response_auth: wrong request_auth fails");
-
-        /* flip a bit in packet to simulate tampered data */
-        uint8_t tampered[20];
-        memcpy(tampered, pkt, 20);
-        tampered[4] ^= 0x01;
-        test_ok(radmsg_validate_response_auth(tampered, 20, secret, secret_len, req_auth) == 0,
-                "validate_response_auth: tampered auth bytes fails");
-
-        test_ok(radmsg_validate_response_auth(pkt, 19, secret, secret_len, req_auth) == 0,
-                "validate_response_auth: buflen < 20 fails");
-
-        test_ok(radmsg_validate_response_auth(pkt, 20, secret, secret_len, req_auth) == 1,
-                "validate_response_auth: minimal 20-byte packet passes again");
-
-        /* test: len > 20 path — 26-byte packet with a 6-byte Proxy-State attribute */
-        {
-            uint8_t pkt26[26];
-            pkt26[0] = 44; /* CoA-ACK */
-            pkt26[1] = 8;  /* id */
-            pkt26[2] = 0;
-            pkt26[3] = 26;            /* length = 26 */
-            memset(pkt26 + 4, 0, 16); /* auth placeholder */
-            /* Proxy-State attribute: type=33, len=6, 4-byte value */
-            pkt26[20] = 33;
-            pkt26[21] = 6;
-            pkt26[22] = 0xde;
-            pkt26[23] = 0xad;
-            pkt26[24] = 0xbe;
-            pkt26[25] = 0xef;
-
-            EVP_MD_CTX *ctx26 = EVP_MD_CTX_new();
-            uint8_t computed26[16];
-            EVP_DigestInit_ex(ctx26, md5, NULL);
-            EVP_DigestUpdate(ctx26, pkt26, 4);      /* code+id+length */
-            EVP_DigestUpdate(ctx26, req_auth, 16);  /* request authenticator */
-            EVP_DigestUpdate(ctx26, pkt26 + 20, 6); /* attribute bytes */
-            EVP_DigestUpdate(ctx26, secret, secret_len);
-            EVP_DigestFinal_ex(ctx26, computed26, NULL);
-            EVP_MD_CTX_free(ctx26);
-            memcpy(pkt26 + 4, computed26, 16);
-
-            test_ok(radmsg_validate_response_auth(pkt26, 26, secret, secret_len, req_auth) == 1,
-                    "validate_response_auth: 26-byte packet with Proxy-State attribute passes");
-        }
-
-        /* test: padded buffer — declared_len < buflen. caller supplies len=20 from header;
-           function must use that, not the buffer size. */
-        {
-            uint8_t pkt_pad[30];
-            /* declared length in header = 20; rest of buffer is padding/noise */
-            pkt_pad[0] = 44; /* CoA-ACK */
-            pkt_pad[1] = 9;  /* id */
-            pkt_pad[2] = 0;
-            pkt_pad[3] = 20; /* declared length = 20, no attributes */
-            memset(pkt_pad + 4, 0, 16);
-            /* bytes 20-29 are noise — must not be included in hash */
-            memset(pkt_pad + 20, 0xff, 10);
-
-            EVP_MD_CTX *ctx_pad = EVP_MD_CTX_new();
-            uint8_t computed_pad[16];
-            EVP_DigestInit_ex(ctx_pad, md5, NULL);
-            EVP_DigestUpdate(ctx_pad, pkt_pad, 4);   /* code+id+length */
-            EVP_DigestUpdate(ctx_pad, req_auth, 16); /* request authenticator */
-            /* no attributes (declared len = 20) */
-            EVP_DigestUpdate(ctx_pad, secret, secret_len);
-            EVP_DigestFinal_ex(ctx_pad, computed_pad, NULL);
-            EVP_MD_CTX_free(ctx_pad);
-            memcpy(pkt_pad + 4, computed_pad, 16);
-
-            test_ok(radmsg_validate_response_auth(pkt_pad, 20, secret, secret_len, req_auth) == 1,
-                    "validate_response_auth: padded buffer uses caller-supplied len not buffer size");
-            test_ok(radmsg_validate_response_auth(pkt_pad, 30, secret, secret_len, req_auth) == 0,
-                    "validate_response_auth: extending len to include noise bytes fails");
-        }
+        inet_pton(AF_INET6, "::ffff:192.0.2.102", &sin6.sin6_addr);
+        free(client->addr);
+        client->addr = addr_copy((struct sockaddr *)&sin6);
+        test_ok(!_internal_match_nas_identifier(client, msg), "not named");
+        radmsg_add(msg, maketlv(RAD_Attr_NAS_IP_Address, 4, v4), 0);
+        test_ok(_internal_match_nas_identifier(client, msg), "nas-ip-address on a v4-mapped client");
+        radmsg_free(msg);
+        msg = request(RAD_CoA_Request, 1, NULL, "nas-x");
+        radmsg_add(msg, makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, 5, (void *)"nas-m"), 0);
+        test_ok(_internal_match_nas_identifier(client, msg), "operator-nas-identifier");
+        radmsg_free(msg);
+        freeclient(client);
     }
 
-    /* test: find_reverse_coa_client_for_response */
+    /* relayed message-authenticator */
     {
-        const uint8_t secret[] = "testing123";
-        const int secret_len = 10;
-        /* sentauth is what send_coa_to_client stores in rqout->sentauth — the
-           response authenticator of the outgoing CoA request, i.e. the 16
-           bytes that the NAS should echo back in its response auth field */
-        const uint8_t sentauth[16] = {
-            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
-            0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00};
+        struct radmsg *nak = radmsg_init(RAD_Disconnect_NAK, 5, rqauth), *back;
+        uint8_t stale[16], *buf = NULL;
+        int len;
 
-        /* build a 20-byte CoA-ACK whose response auth is computed as
-           MD5(code||id||length||sentauth||secret) */
-        uint8_t pkt[20];
-        pkt[0] = RAD_CoA_ACK;
-        pkt[1] = 7; /* id that maps to slot 7 in rqout */
-        pkt[2] = 0;
-        pkt[3] = 20;
-        memset(pkt + 4, 0, 16);
-
-        {
-            EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-            uint8_t computed[16];
-            EVP_DigestInit_ex(ctx, EVP_md5(), NULL);
-            EVP_DigestUpdate(ctx, pkt, 4);
-            EVP_DigestUpdate(ctx, sentauth, 16);
-            EVP_DigestUpdate(ctx, secret, secret_len);
-            EVP_DigestFinal_ex(ctx, computed, NULL);
-            EVP_MD_CTX_free(ctx);
-            memcpy(pkt + 4, computed, 16);
-        }
-
-        /* build conf and client scaffolding */
-        pthread_mutex_t conf_lock = PTHREAD_MUTEX_INITIALIZER;
-        struct clsrvconf conf;
-        memset(&conf, 0, sizeof(conf));
-        conf.clients = list_create();
-        conf.lock = &conf_lock;
-        conf.secret = (uint8_t *)secret;
-        conf.secret_len = secret_len;
-        conf.type = RAD_UDP;
-
-        struct sockaddr_in client_addr = {.sin_family = AF_INET};
-        inet_pton(AF_INET, "192.0.2.100", &client_addr.sin_addr);
-        client_addr.sin_port = htons(12345); /* ephemeral auth port */
-
-        struct client *cli = calloc(1, sizeof(struct client));
-        cli->conf = &conf;
-        cli->sock = 42;
-        cli->addr = (struct sockaddr *)malloc(sizeof(struct sockaddr_in));
-        memcpy(cli->addr, &client_addr, sizeof(struct sockaddr_in));
-        cli->reverse_coa_rqs = calloc(MAX_REQUESTS, sizeof(struct rqout));
-        pthread_mutex_init(&cli->lock, NULL);
-
-        /* slot 7 has a pending rqout with known sentauth */
-        /* stack-scaffolded request, never allocated via newrequest().
-           do not pass to freerq/clear_rqout — the test only stores the pointer as a
-           sentinel that the slot is occupied. */
-        struct request dummy_rq;
-        memset(&dummy_rq, 0, sizeof(dummy_rq));
-        cli->reverse_coa_rqs[7].rq = &dummy_rq;
-        memcpy(cli->reverse_coa_rqs[7].sentauth, sentauth, 16);
-
-        list_push(conf.clients, cli);
-
-        /* packet source: same IP as client_addr but from CoA listener port 3799 */
-        struct sockaddr_in coa_src = {.sin_family = AF_INET};
-        inet_pton(AF_INET, "192.0.2.100", &coa_src.sin_addr);
-        coa_src.sin_port = htons(3799);
-
-        /* test 1: matching ip + correct auth -> returns client */
-        struct client *result = find_reverse_coa_client_for_response(
-            &conf, 42, (struct sockaddr *)&coa_src, pkt, 20);
-        test_ok(result == cli, "find_rcoa_client: correct ip+auth returns client");
-
-        /* test 2: slot rq == NULL -> NULL */
-        cli->reverse_coa_rqs[7].rq = NULL;
-        result = find_reverse_coa_client_for_response(
-            &conf, 42, (struct sockaddr *)&coa_src, pkt, 20);
-        test_ok(result == NULL, "find_rcoa_client: no pending rq returns NULL");
-        cli->reverse_coa_rqs[7].rq = &dummy_rq;
-
-        /* test 3: wrong sentauth (client stored different sentauth) -> NULL */
-        uint8_t wrong_sentauth[16];
-        memcpy(wrong_sentauth, sentauth, 16);
-        wrong_sentauth[0] ^= 0xff;
-        memcpy(cli->reverse_coa_rqs[7].sentauth, wrong_sentauth, 16);
-        result = find_reverse_coa_client_for_response(
-            &conf, 42, (struct sockaddr *)&coa_src, pkt, 20);
-        test_ok(result == NULL, "find_rcoa_client: mismatched sentauth returns NULL");
-        memcpy(cli->reverse_coa_rqs[7].sentauth, sentauth, 16);
-
-        /* test 4: wrong source ip -> NULL */
-        struct sockaddr_in wrong_src = {.sin_family = AF_INET};
-        inet_pton(AF_INET, "192.0.2.200", &wrong_src.sin_addr);
-        wrong_src.sin_port = htons(3799);
-        result = find_reverse_coa_client_for_response(
-            &conf, 42, (struct sockaddr *)&wrong_src, pkt, 20);
-        test_ok(result == NULL, "find_rcoa_client: wrong source ip returns NULL");
-
-        /* test 5: wrong sock -> NULL */
-        result = find_reverse_coa_client_for_response(
-            &conf, 99, (struct sockaddr *)&coa_src, pkt, 20);
-        test_ok(result == NULL, "find_rcoa_client: wrong sock returns NULL");
-
-        /* test 6: len > 20 packet with attribute — exercises the _validauth
-           attribute-bytes hashing path end-to-end */
-        {
-            uint8_t my_sentauth[16] = {
-                0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe,
-                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef};
-            /* 26-byte CoA-ACK: code=44, id=9, length=26,
-               auth=placeholder, Proxy-State attr type=33 len=6 val=cafebabe */
-            uint8_t pkt26[26];
-            pkt26[0] = RAD_CoA_ACK;
-            pkt26[1] = 9; /* id -> slot 9 */
-            pkt26[2] = 0;
-            pkt26[3] = 26;
-            memset(pkt26 + 4, 0, 16); /* auth placeholder */
-            pkt26[20] = 33;           /* Proxy-State type */
-            pkt26[21] = 6;            /* length (type+len+4 bytes) */
-            pkt26[22] = 0xca;
-            pkt26[23] = 0xfe;
-            pkt26[24] = 0xba;
-            pkt26[25] = 0xbe;
-
-            /* compute response auth over attr bytes as well */
-            EVP_MD_CTX *ctx9 = EVP_MD_CTX_new();
-            uint8_t computed9[16];
-            EVP_DigestInit_ex(ctx9, EVP_md5(), NULL);
-            EVP_DigestUpdate(ctx9, pkt26, 4);        /* code+id+length */
-            EVP_DigestUpdate(ctx9, my_sentauth, 16); /* sentauth in the slot */
-            EVP_DigestUpdate(ctx9, pkt26 + 20, 6);   /* attribute bytes */
-            EVP_DigestUpdate(ctx9, secret, secret_len);
-            EVP_DigestFinal_ex(ctx9, computed9, NULL);
-            EVP_MD_CTX_free(ctx9);
-            memcpy(pkt26 + 4, computed9, 16);
-
-            /* plant sentauth in slot 9 */
-            struct request dummy_rq9;
-            memset(&dummy_rq9, 0, sizeof(dummy_rq9));
-            cli->reverse_coa_rqs[9].rq = &dummy_rq9;
-            memcpy(cli->reverse_coa_rqs[9].sentauth, my_sentauth, 16);
-
-            result = find_reverse_coa_client_for_response(
-                &conf, 42, (struct sockaddr *)&coa_src, pkt26, 26);
-            test_ok(result == cli,
-                    "find_rcoa_client: len>20 packet with attribute matches");
-
-            /* clean up slot 9 */
-            cli->reverse_coa_rqs[9].rq = NULL;
-        }
-
-        /* cleanup */
-        list_removedata(conf.clients, cli);
-        list_free(conf.clients);
-        pthread_mutex_destroy(&cli->lock);
-        free(cli->addr);
-        free(cli->reverse_coa_rqs);
-        free(cli);
-        pthread_mutex_destroy(&conf_lock);
+        memset(stale, 0x5a, 16);
+        radmsg_add(nak, maketlvlongint(RAD_Attr_Error_Cause, RAD_Err_Unsupported_Extension), 0);
+        radmsg_add(nak, maketlv(RAD_Attr_Message_Authenticator, 16, stale), 0);
+        len = radmsg2buf(nak, secret, secretlen, &buf);
+        back = buf2radmsg(buf, len, secret, secretlen, rqauth);
+        test_ok(back && (back->authstate == RSP_RADMSG_INVALID || back->authstate == RSP_RADMSG_MSGAUTH_INVALID), "stale msgauth fails");
+        radmsg_free(back);
+        free(buf);
+        memcpy(nak->auth, rqauth, 16);
+        ensuremsgauthfront(nak);
+        len = radmsg2buf(nak, secret, secretlen, &buf);
+        back = buf2radmsg(buf, len, secret, secretlen, rqauth);
+        test_ok(back && back->authstate == RSP_RADMSG_MSGAUTH_VALID, "fresh msgauth verifies");
+        radmsg_free(back);
+        free(buf);
+        radmsg_free(nak);
     }
+
+    /* pending */
+    {
+        struct client *client = newclient("idle", NULL, NULL, "192.0.2.101");
+
+        test_ok(!client_has_pending_reverse_coa(client), "nothing sent");
+        client->reverse_coa_rqs = calloc(MAX_REQUESTS, sizeof(struct rqout));
+        test_ok(!client_has_pending_reverse_coa(client), "nothing pending");
+        client->reverse_coa_rqs[200].rq = newrequest();
+        client->reverse_coa_rqs[200].expiry.tv_sec = time(NULL) + 30;
+        client->reverse_coa_pending = 1;
+        test_ok(client_has_pending_reverse_coa(client), "pending set");
+        client->reverse_coa_rqs[200].expiry.tv_sec = time(NULL) - 30;
+        test_ok(!client_has_pending_reverse_coa(client) && !client->reverse_coa_rqs[200].rq, "expired slot cleared");
+        freeclient(client);
+    }
+
+    server = newserver("hub");
+    nas = newclient("nas", "nas-1", literalrealm, "192.0.2.10");
+    proxy = newclient("proxy", NULL, NULL, "192.0.2.20");
+
+    /* realm registry */
+    {
+        struct client *other = newclient("other", "nas-2", regexprealm, "192.0.2.30");
+        struct request *rq;
+
+        test_eq(0, dispatch(server, request(RAD_CoA_Request, 1, "1example.com", "nas-1")), "literal realm");
+        rq = queued(nas);
+        test_ok(rq != NULL, "case-insensitive match delivered");
+        freerq(rq);
+        test_eq(0, dispatch(server, request(RAD_CoA_Request, 2, "1ap.example.net", "nas-2")), "regexp realm");
+        rq = queued(other);
+        test_ok(rq != NULL, "regexp match delivered");
+        freerq(rq);
+        test_eq(RAD_Err_NAS_Identification_Mismatch, dispatch(server, request(RAD_CoA_Request, 3, "1example.com", "nas-2")), "nas not named 403");
+        test_eq(RAD_Err_Request_Not_Routable, dispatch(server, request(RAD_CoA_Request, 4, "1example.org", "nas-1")), "unknown realm 502");
+        test_ok(!queued(nas) && !queued(other), "nothing queued");
+        unregister_reverse_coa_client(other);
+        test_ok(!_internal_reverse_coa_route_target(other->reverse_coa_route), "unregister clears the target");
+        test_eq(RAD_Err_Request_Not_Routable, dispatch(server, request(RAD_CoA_Request, 5, "1ap.example.net", "nas-2")), "unregistered realm 502");
+        freeclient(other);
+    }
+
+    /* dispatch */
+    {
+        struct request *rq, *origin;
+        struct radmsg *msg, *sent;
+        uint8_t v4[4] = {192, 0, 2, 10};
+
+        test_eq(0, dispatch(server, request(RAD_CoA_Request, 10, "1example.com", "nas-1")), "named nas");
+        rq = queued(nas);
+        sent = rq ? buf2radmsg(rq->replybuf, rq->replybuflen, secret, secretlen, NULL) : NULL;
+        test_ok(sent && sent->authstate == RSP_RADMSG_MSGAUTH_VALID, "signed for the client");
+        test_ok(sent && !radmsg_gettype(sent, RAD_Attr_Operator_Name) && !radmsg_getexttype(sent, RAD_ExtAttr_Operator_NAS_Identifier), "operator attributes removed");
+        test_ok(sent && radmsg_gettype(sent, RAD_Attr_NAS_Identifier), "nas-identifier kept");
+        test_ok(rq && rq->rqid == 10 && rq->to == server && sent && sent->id == rq->newid, "answers to the server");
+        test_ok(rq && rq->to_override && ntohs(((struct sockaddr_in *)rq->to_override)->sin_port) == 3799, "sent to the coa port");
+        radmsg_free(sent);
+        freerq(rq);
+
+        /* a plain rfc 5176 request names the nas by address */
+        msg = request(RAD_CoA_Request, 11, NULL, NULL);
+        radmsg_add(msg, maketlv(RAD_Attr_NAS_IP_Address, 4, v4), 0);
+        test_eq(0, dispatch(server, msg), "nas-ip-address without operator-name");
+        rq = queued(nas);
+        test_ok(rq != NULL, "delivered by address");
+        freerq(rq);
+
+        /* operator-nas-identifier names the connection, next to operator-name only */
+        strcpy(nas->token, "0123456789abcdef");
+        msg = request(RAD_CoA_Request, 12, "1example.org", NULL);
+        radmsg_add(msg, makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, REVERSE_COA_TOKEN_LEN, nas->token), 0);
+        test_eq(0, dispatch(server, msg), "token names the connection");
+        rq = queued(nas);
+        test_ok(rq != NULL, "delivered by token");
+        freerq(rq);
+        msg = request(RAD_CoA_Request, 13, NULL, NULL);
+        radmsg_add(msg, makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, REVERSE_COA_TOKEN_LEN, nas->token), 0);
+        test_eq(RAD_Err_Request_Not_Routable, dispatch(server, msg), "token without operator-name ignored");
+
+        /* never back to the sender */
+        origin = newrequest();
+        origin->from = nas;
+        origin->msg = request(RAD_CoA_Request, 18, "1example.com", "nas-1");
+        test_eq(RAD_Err_Request_Not_Routable, route_reverse_coa_from_client(origin), "not back to the sender");
+        test_ok(!queued(nas), "nothing queued for the sender");
+        freerq(origin);
+    }
+
+    /* duplicates */
+    {
+        struct radmsg *msg = request(RAD_CoA_Request, 20, "1example.org", NULL), *nak;
+        struct tlv *attr;
+        uint8_t *buf, *copy;
+        int len = radmsg2buf(msg, secret, secretlen, &buf);
+
+        copy = malloc(len);
+        memcpy(copy, buf, len);
+        sentcount = 0;
+        test_ok(try_handle_reverse_coa_request(server, copy, len), "request taken");
+        nak = sentcount ? buf2radmsg(sentbuf, sentlen, secret, secretlen, msg->auth) : NULL;
+        attr = nak ? radmsg_gettype(nak, RAD_Attr_Error_Cause) : NULL;
+        test_ok(nak && nak->code == RAD_CoA_NAK && nak->id == 20 && nak->authstate == RSP_RADMSG_MSGAUTH_VALID, "nak signed for the server");
+        test_ok(attr && tlv2longint(attr) == RAD_Err_Request_Not_Routable, "error-cause 502");
+        radmsg_free(nak);
+        test_ok(server->reverse_coa_seen[20].occupied && server->reverse_coa_seen[20].replybuf, "slot holds the reply");
+        copy = malloc(len);
+        memcpy(copy, buf, len);
+        test_ok(try_handle_reverse_coa_request(server, copy, len) && sentcount == 2, "duplicate answered from the slot");
+        test_eq(1, _internal_is_coa_duplicate(server, msg), "duplicate");
+        msg->auth[0] ^= 0xff;
+        test_eq(0, _internal_is_coa_duplicate(server, msg), "other authenticator is new");
+        msg->auth[0] ^= 0xff;
+        server->reverse_coa_seen[20].received -= 300;
+        test_ok(!_internal_is_coa_duplicate(server, msg) && !server->reverse_coa_seen[20].occupied, "expired slot cleared");
+        _internal_record_coa_dedup(server, 20, msg->auth);
+        test_ok(server->reverse_coa_seen[20].occupied && !server->reverse_coa_seen[20].replybuf, "recorded without a reply");
+        test_eq(1, _internal_is_coa_duplicate(server, msg), "duplicate while pending");
+        free(buf);
+        radmsg_free(msg);
+
+        /* event-timestamp within the window */
+        msg = request(RAD_CoA_Request, 21, "1example.org", NULL);
+        radmsg_add(msg, maketlvlongint(RAD_Attr_Event_Timestamp, (uint32_t)time(NULL) - 3600), 0);
+        len = radmsg2buf(msg, secret, secretlen, &buf);
+        sentcount = 0;
+        test_ok(try_handle_reverse_coa_request(server, buf, len) && !sentcount && !server->reverse_coa_seen[21].occupied, "stale event-timestamp dropped");
+        radmsg_free(msg);
+        msg = request(RAD_CoA_Request, 22, "1example.org", NULL);
+        radmsg_add(msg, maketlvlongint(RAD_Attr_Event_Timestamp, (uint32_t)time(NULL)), 0);
+        len = radmsg2buf(msg, secret, secretlen, &buf);
+        test_ok(try_handle_reverse_coa_request(server, buf, len) && sentcount == 1, "current event-timestamp taken");
+        radmsg_free(msg);
+    }
+
+    /* response pairing */
+    {
+        struct radmsg *msg = request(RAD_Disconnect_Request, 30, "1example.com", "nas-1"), *resp, *back;
+        struct request *rq, *origin;
+        uint8_t auth[16], id;
+
+        memcpy(auth, msg->auth, 16);
+        test_eq(0, dispatch(server, msg), "disconnect sent");
+        rq = queued(nas);
+        id = rq ? rq->newid : 0;
+        freerq(rq);
+        resp = radmsg_init(RAD_CoA_ACK, id, NULL);
+        test_ok(!forward_coa_response(nas, resp) && nas->reverse_coa_rqs[id].rq, "coa-ack does not answer a disconnect");
+        resp->code = RAD_Disconnect_ACK;
+        sentcount = 0;
+        test_ok(forward_coa_response(nas, resp) && !nas->reverse_coa_rqs[id].rq, "disconnect-ack answers");
+        back = sentcount ? buf2radmsg(sentbuf, sentlen, secret, secretlen, auth) : NULL;
+        test_ok(back && back->code == RAD_Disconnect_ACK && back->id == 30 && back->authstate == RSP_RADMSG_MSGAUTH_VALID, "relayed under the original id");
+        test_ok(!forward_coa_response(nas, resp), "nothing pending for the id");
+        radmsg_free(back);
+        radmsg_free(resp);
+
+        /* a request from a client is answered by the response */
+        origin = newrequest();
+        origin->from = proxy;
+        origin->msg = request(RAD_Disconnect_Request, 31, "1example.com", "nas-1");
+        test_eq(0, route_reverse_coa_from_client(origin), "client request routed");
+        rq = queued(nas);
+        id = rq ? rq->newid : 0;
+        test_ok(rq && rq->origin == origin, "origin kept");
+        freerq(rq);
+        resp = radmsg_init(RAD_Disconnect_ACK, id, NULL);
+        test_ok(forward_coa_response(nas, resp), "answered");
+        rq = queued(proxy);
+        test_ok(rq == origin && rq->replybuf[0] == RAD_Disconnect_ACK && rq->replybuf[1] == 31, "client request answered");
+        freerq(rq);
+        freerq(origin);
+        radmsg_free(resp);
+    }
+
+    freeclient(proxy);
+    freeclient(nas);
+    freeserver(server);
+    free(sentbuf);
 
     printf("1..%d\n", numtests);
     return 0;

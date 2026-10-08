@@ -1,6 +1,7 @@
 /* Copyright (c) 2007-2009, UNINETT AS
  * Copyright (c) 2023, SWITCH
- * Copyright (c) 2026, Nova Labs */
+ * Copyright (c) 2026, Nova Labs
+ * Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
 #include "debug.h"
@@ -174,9 +175,7 @@ int radmsg_copy_attrs(struct radmsg *dst,
     return n;
 }
 
-/* validates a RADIUS response packet's authenticator (RFC 2865 section 3) against the
-   request authenticator it answers, without touching the caller's buffer. used by the
-   reverse-CoA response path to tell apart clients sharing one source address. */
+/* returns 1 if buf carries a valid response authenticator for request_auth */
 int radmsg_validate_response_auth(const uint8_t *buf, int buflen,
                                   const uint8_t *secret, int secret_len,
                                   const uint8_t *request_auth) {
@@ -494,12 +493,40 @@ exit:
 }
 
 const char *radmsgtype2string(uint8_t code) {
-    static const char *rad_msg_names[] = {
-        "", "Access-Request", "Access-Accept", "Access-Reject",
-        "Accounting-Request", "Accounting-Response", "", "",
-        "", "", "", "Access-Challenge",
-        "Status-Server", "Status-Client"};
-    return code < 14 && *rad_msg_names[code] ? rad_msg_names[code] : "Unknown";
+    switch (code) {
+    case RAD_Access_Request:
+        return "Access-Request";
+    case RAD_Access_Accept:
+        return "Access-Accept";
+    case RAD_Access_Reject:
+        return "Access-Reject";
+    case RAD_Accounting_Request:
+        return "Accounting-Request";
+    case RAD_Accounting_Response:
+        return "Accounting-Response";
+    case RAD_Access_Challenge:
+        return "Access-Challenge";
+    case RAD_Status_Server:
+        return "Status-Server";
+    case RAD_Status_Client:
+        return "Status-Client";
+    case RAD_Disconnect_Request:
+        return "Disconnect-Request";
+    case RAD_Disconnect_ACK:
+        return "Disconnect-ACK";
+    case RAD_Disconnect_NAK:
+        return "Disconnect-NAK";
+    case RAD_CoA_Request:
+        return "CoA-Request";
+    case RAD_CoA_ACK:
+        return "CoA-ACK";
+    case RAD_CoA_NAK:
+        return "CoA-NAK";
+    case RAD_Protocol_Error:
+        return "Protocol-Error";
+    default:
+        return "Unknown";
+    }
 }
 
 const char *attrval2strdict(struct tlv *attr) {

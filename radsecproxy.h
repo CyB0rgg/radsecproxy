@@ -1,7 +1,8 @@
 /* Copyright (c) 2007-2009, UNINETT AS
  * Copyright (c) 2010-2012,2016, NORDUnet A/S
  * Copyright (c) 2023, SWITCH
- * Copyright (c) 2026, Nova Labs */
+ * Copyright (c) 2026, Nova Labs
+ * Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
 #ifndef _RADSECPROXY_H
@@ -32,8 +33,8 @@
 #define DUPLICATE_INTERVAL REQUEST_RETRY_INTERVAL *REQUEST_RETRY_COUNT
 #define MAX_CERT_DEPTH 5
 #define STATUS_SERVER_PERIOD 25
-#define STATUS_SERVER_PERIOD_REVERSE_COA 15
 #define IDLE_TIMEOUT_DEFAULT 600
+#define REVERSE_COA_TOKEN_LEN 16
 #define PSK_MIN_LENGTH 16
 #define RSP_SECRET_LEN_WARN 12
 /* Older OpenSSL API had a 256 byte limit; keep this limit to maximize compatibility*/
@@ -134,7 +135,8 @@ struct request {
     uint8_t rqauth[16];
     uint8_t newid;
     int udpsock;                          /* only for UDP */
-    struct sockaddr_storage *to_override; /* reverse coa udp dest override, replaces from->addr for port fix-up */
+    struct sockaddr_storage *to_override; /* reverse coa to a udp client, else NULL */
+    struct request *origin;               /* client request a reverse coa response answers */
 };
 
 /* requests that our client will send */
@@ -208,9 +210,13 @@ struct clsrvconf {
     long reverse_coa_timeout;
     uint16_t coaport; /* reverse coa destination port for udp clients, default 3799 */
     uint8_t accept_coa;
+    uint8_t add_operator_nas_id;
+    char token[REVERSE_COA_TOKEN_LEN + 1]; /* udp clients share one token per block, see addclient() */
 };
 
 #include "tlscommon.h"
+
+struct reverse_coa_route;
 
 struct coa_dedup_slot {
     uint8_t occupied;
@@ -218,9 +224,9 @@ struct coa_dedup_slot {
     time_t received;
     uint8_t *replybuf;
     int replybuflen;
+    struct reverse_coa_route *route; /* where the request went, for retransmissions */
+    uint8_t id;
 };
-
-struct reverse_coa_route;
 
 struct client {
     struct clsrvconf *conf;
@@ -232,9 +238,11 @@ struct client {
     struct sockaddr *addr;
     time_t expiry; /* for udp */
     struct timeval tlsnewkey;
-    struct rqout *reverse_coa_rqs;
+    struct rqout *reverse_coa_rqs; /* allocated on the first reverse coa sent */
     uint8_t reverse_coa_nextid;
+    int reverse_coa_pending;
     struct reverse_coa_route *reverse_coa_route;
+    char token[REVERSE_COA_TOKEN_LEN + 1]; /* names this connection in Operator-NAS-Identifier */
 };
 
 struct server {
@@ -257,7 +265,7 @@ struct server {
     uint8_t conreset;
     pthread_mutex_t newrq_mutex;
     pthread_cond_t newrq_cond;
-    struct coa_dedup_slot reverse_coa_seen[MAX_REQUESTS];
+    struct coa_dedup_slot *reverse_coa_seen; /* only with acceptReverseCoA */
     pthread_mutex_t reverse_coa_lock;
     time_t last_dedup_cleanup;
 };
@@ -313,18 +321,18 @@ struct gqueue *newqueue(void);
 struct request *newrequest(void);
 struct request *newrqref(struct request *rq);
 int sendreply(struct request *rq);
+int ensuremsgauthfront(struct radmsg *msg);
 void freerq(struct request *rq);
-const char *radmsgtype2string(uint8_t code);
 int radsrv(struct request *rq);
+struct realm *newrealmref(struct realm *r);
+struct clsrvconf *choosesrvconf(struct list *srvconfs);
+int addserver(struct clsrvconf *conf, const char *dynamiclookuparg);
 int timeouth(struct server *server);
 int closeh(struct server *server);
 int replyh(struct server *server, uint8_t *buf, int buflen);
 struct addrinfo *resolve_hostport_addrinfo(uint8_t type, char *hostport);
 uint8_t *radattr2ascii(struct tlv *attr); /* TODO: mv this to radmsg? */
 extern pthread_attr_t pthread_attr;
-
-struct clsrvconf *choosesrvconf(struct list *srvconfs);
-int addserver(struct clsrvconf *conf, const char *dynamiclookuparg);
 
 #endif /* _RADSECPROXY_H */
 

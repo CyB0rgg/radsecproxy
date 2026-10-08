@@ -1,4 +1,5 @@
 /* Copyright (c) 2026, Nova Labs */
+/* Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
 #include "coa.h"
@@ -22,15 +23,18 @@ char *extract_operator_realm(struct radmsg *msg, char *buf, size_t bufsize) {
 
     for (node = list_first(attrs); node; node = list_next(node)) {
         struct tlv *attr = node->data;
-        if (attr->l > 1 && attr->v[0] == '1') {
-            len = attr->l - 1;
-            if (len > (int)bufsize - 1)
-                len = (int)bufsize - 1;
-            memcpy(buf, attr->v + 1, len);
-            buf[len] = '\0';
-            result = buf;
-            break;
-        }
+        const uint8_t *start;
+        if (attr->l < 2)
+            continue;
+        /* namespace 1 (realm, rfc 5580 4.1): match the realm; any other: match the whole value */
+        start = attr->v[0] == '1' ? attr->v + 1 : attr->v;
+        len = attr->l - (int)(start - attr->v);
+        if (len > (int)bufsize - 1)
+            len = (int)bufsize - 1;
+        memcpy(buf, start, len);
+        buf[len] = '\0';
+        result = buf;
+        break;
     }
     list_free(attrs);
     return result;
@@ -44,31 +48,10 @@ static struct realm *find_coa_realm(struct list *realmlist, const char *subject)
         realm = (struct realm *)entry->data;
         if (!regexec(&realm->regex, subject, 0, NULL, 0)) {
             pthread_mutex_lock(&realm->mutex);
-            pthread_mutex_lock(&realm->refmutex);
-            realm->refcount++;
-            pthread_mutex_unlock(&realm->refmutex);
-            return realm;
+            return newrealmref(realm);
         }
     }
     return NULL;
-}
-
-static struct tlv *first_operator_nas_id(struct radmsg *msg) {
-    struct list *extattrs = radmsg_getalltype(msg, RAD_Attr_Extended_Type_1);
-    struct list_node *node;
-    struct tlv *found = NULL;
-
-    if (!extattrs)
-        return NULL;
-    for (node = list_first(extattrs); node; node = list_next(node)) {
-        struct tlv *attr = node->data;
-        if (attr->l > 1 && attr->v[0] == RAD_Extended_Operator_NAS_Id) {
-            found = attr;
-            break;
-        }
-    }
-    list_free(extattrs);
-    return found;
 }
 
 struct nas_identity_attrs {
@@ -81,7 +64,8 @@ struct nas_identity_attrs {
 static void resolve_nas_identity_attrs(struct radmsg *msg, struct nas_identity_attrs *attrs) {
     struct tlv *attr;
 
-    attrs->operator_nas_id = first_operator_nas_id(msg);
+    attr = radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier);
+    attrs->operator_nas_id = (attr && attr->l > 1) ? attr : NULL;
 
     attr = radmsg_gettype(msg, RAD_Attr_NAS_Identifier);
     attrs->nas_identifier = (attr && attr->l >= 1) ? attr : NULL;
@@ -131,7 +115,7 @@ static int conf_matches_nas_identity(const struct clsrvconf *conf, const struct 
            (attrs->nas_ipv6 && match_nas_ipv6(conf, attrs->nas_ipv6));
 }
 
-static int realm_is_nas_discriminating(struct list *coasrvconfs) {
+static int realm_names_nas(struct list *coasrvconfs) {
     struct list_node *entry;
 
     for (entry = list_first(coasrvconfs); entry; entry = list_next(entry))
@@ -186,8 +170,8 @@ struct server *findcoaserver(struct list *realmlist, struct realm **realm, struc
 
         if (list_first(matches)) {
             srvconf = choosesrvconf(matches);
-        } else if (realm_is_nas_discriminating((*realm)->coasrvconfs)) {
-            debug(DBG_INFO, "findcoaserver: nas identification attributes matched no coaServer in nas-discriminating realm %s", (*realm)->name);
+        } else if (realm_names_nas((*realm)->coasrvconfs)) {
+            debug(DBG_INFO, "findcoaserver: no coaServer in realm %s matches the nas", (*realm)->name);
             *nasmismatch = 1;
             list_free(matches);
             return NULL;
@@ -222,7 +206,7 @@ uint8_t coa_nak_code(uint8_t requestcode) {
     return requestcode == RAD_Disconnect_Request ? RAD_Disconnect_NAK : RAD_CoA_NAK;
 }
 
-int event_timestamp_fresh(struct tlv *attr, uint8_t window) {
+int event_timestamp_fresh(struct tlv *attr, int window) {
     uint32_t ts;
     int64_t now;
     int64_t delta;
