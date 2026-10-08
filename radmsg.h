@@ -1,8 +1,7 @@
 /* Copyright (c) 2007-2008, UNINETT AS
  * Copyright (c) 2015, NORDUnet A/S
  * Copyright (c) 2023, SWITCH
- * Copyright (c) 2026, Nova Labs
- * Copyright (c) 2026, CyB0rgg */
+ * Copyright (c) 2026, Nova Labs */
 /* See LICENSE for licensing information. */
 
 #ifndef _RADMSG_H

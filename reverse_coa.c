@@ -1,11 +1,11 @@
 /* Copyright (c) 2026, Nova Labs */
-/* Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
 #include "reverse_coa.h"
 
 #include "coa.h"
 #include "debug.h"
+#include "hash.h"
 #include "list.h"
 #include "radmsg.h"
 #include "udp.h"
@@ -81,11 +81,15 @@ struct client *_internal_reverse_coa_route_target(struct reverse_coa_route *rout
 static struct list *reverse_coa_realm_list;
 static struct list *reverse_coa_nas_routes;
 static pthread_mutex_t realm_reverse_coa_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct hash *sessionbinds; /* locks itself per call; sessionbind_lock covers a lookup and the change */
+static pthread_mutex_t sessionbind_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t sessionbindcount;
 
 void init_reverse_coa(void) {
+    sessionbinds = hash_create();
     reverse_coa_realm_list = list_create();
     reverse_coa_nas_routes = list_create();
-    if (!reverse_coa_realm_list || !reverse_coa_nas_routes)
+    if (!sessionbinds || !reverse_coa_realm_list || !reverse_coa_nas_routes)
         debugx(1, DBG_ERR, "malloc failed");
 }
 
@@ -771,6 +775,156 @@ static int send_coa_to_client(struct server *from_server, struct request *origin
     return 0;
 }
 
+/* session binding: the client connection a session was seen on, keyed by the
+   operator-name realm and Acct-Session-Id or Chargeable-User-Identity, so a reverse
+   coa for the session goes down the same connection when several are registered */
+#define SESSIONBIND_MAX 65536
+#define SESSIONBIND_TTL 86400
+
+struct sessionbind {
+    struct reverse_coa_route *route;
+    time_t seen;
+    char *key;
+    uint32_t keylen;
+};
+
+/* key is <realm>\0<attr>\0<value>; attr 44 or 89 taken from reply if given, else msg */
+int sessionbindkey(struct radmsg *msg, struct radmsg *reply, uint8_t attr, char *buf, size_t bufsize) {
+    char opkey[256];
+    struct tlv *id;
+    size_t len, oplen;
+
+    id = radmsg_gettype(reply ? reply : msg, attr);
+    if (!id || !id->l)
+        return 0;
+    if (!extract_operator_realm(msg, opkey, sizeof(opkey)))
+        opkey[0] = '\0';
+    oplen = strlen(opkey);
+    len = oplen + 3 + id->l;
+    if (len > bufsize)
+        return 0;
+    memcpy(buf, opkey, oplen + 1);
+    buf[oplen + 1] = attr;
+    buf[oplen + 2] = '\0';
+    memcpy(buf + oplen + 3, id->v, id->l);
+    return (int)len;
+}
+
+static void sessionbindfree(struct sessionbind *b) {
+    reverse_coa_route_deref(b->route);
+    free(b->key);
+    free(b);
+}
+
+/* drops expired entries, and the oldest ones while over the limit; sessionbind_lock held */
+static void sessionbindprune(time_t now) {
+    struct hash_entry *e, *next;
+    struct sessionbind *b, *oldest;
+
+    for (e = hash_first(sessionbinds); e; e = next) {
+        next = hash_next(e);
+        b = (struct sessionbind *)e->data;
+        if (now - b->seen > SESSIONBIND_TTL) {
+            hash_extract(sessionbinds, b->key, b->keylen);
+            sessionbindfree(b);
+            sessionbindcount--;
+        }
+    }
+    while (sessionbindcount >= SESSIONBIND_MAX) {
+        oldest = NULL;
+        for (e = hash_first(sessionbinds); e; e = hash_next(e)) {
+            b = (struct sessionbind *)e->data;
+            if (!oldest || b->seen < oldest->seen)
+                oldest = b;
+        }
+        if (!oldest)
+            break;
+        hash_extract(sessionbinds, oldest->key, oldest->keylen);
+        sessionbindfree(oldest);
+        sessionbindcount--;
+    }
+}
+
+static void sessionbindset(struct reverse_coa_route *route, const char *key, uint32_t keylen) {
+    struct sessionbind *b;
+    time_t now;
+
+    time(&now);
+    pthread_mutex_lock(&sessionbind_lock);
+    b = (struct sessionbind *)hash_read(sessionbinds, key, keylen);
+    if (b) {
+        if (b->route != route) {
+            reverse_coa_route_deref(b->route);
+            reverse_coa_route_ref(route);
+            b->route = route;
+        }
+        b->seen = now;
+        pthread_mutex_unlock(&sessionbind_lock);
+        return;
+    }
+    if (sessionbindcount >= SESSIONBIND_MAX)
+        sessionbindprune(now);
+    b = malloc(sizeof(struct sessionbind));
+    if (b) {
+        b->key = malloc(keylen);
+        if (b->key) {
+            memcpy(b->key, key, keylen);
+            b->keylen = keylen;
+            b->seen = now;
+            reverse_coa_route_ref(route);
+            b->route = route;
+            if (hash_insert(sessionbinds, b->key, keylen, b)) {
+                sessionbindcount++;
+                b = NULL;
+            } else
+                sessionbindfree(b);
+        } else
+            free(b);
+    }
+    if (b)
+        debug(DBG_ERR, "sessionbindset: malloc failed");
+    pthread_mutex_unlock(&sessionbind_lock);
+}
+
+static void sessionbindclear(const char *key, uint32_t keylen) {
+    struct sessionbind *b;
+
+    pthread_mutex_lock(&sessionbind_lock);
+    b = (struct sessionbind *)hash_extract(sessionbinds, key, keylen);
+    if (b) {
+        sessionbindfree(b);
+        sessionbindcount--;
+    }
+    pthread_mutex_unlock(&sessionbind_lock);
+}
+
+/* called for requests from a client registered for reverse coa (msg only) and for the
+   access-accept going back to it (msg and reply): Acct-Session-Id from the request,
+   Chargeable-User-Identity from the reply; an accounting stop unbinds */
+void sessionbind(struct client *client, struct radmsg *msg, struct radmsg *reply) {
+    char key[512];
+    struct tlv *attr;
+    int len;
+
+    if (!client || !client->reverse_coa_route || !sessionbinds)
+        return;
+    if (reply) {
+        if (reply->code == RAD_Access_Accept && (len = sessionbindkey(msg, reply, RAD_Attr_CUI, key, sizeof(key))) > 0)
+            sessionbindset(client->reverse_coa_route, key, len);
+        return;
+    }
+    if (msg->code != RAD_Access_Request && msg->code != RAD_Accounting_Request)
+        return;
+    len = sessionbindkey(msg, NULL, RAD_Attr_Acct_Session_Id, key, sizeof(key));
+    if (len <= 0)
+        return;
+    attr = radmsg_gettype(msg, RAD_Attr_Acct_Status_Type);
+    if (msg->code == RAD_Accounting_Request && attr && tlv2longint(attr) == RAD_Acct_Status_Stop)
+        sessionbindclear(key, len);
+    else
+        sessionbindset(client->reverse_coa_route, key, len);
+}
+
 /* sends down a route taken from the registry or the binding table, the caller holds
    a reference which moves to sent when the request went out */
 static int send_to_route(struct server *server, struct request *origin, struct reverse_coa_route *route,
@@ -784,6 +938,32 @@ static int send_to_route(struct server *server, struct request *origin, struct r
     if (result)
         reverse_coa_route_deref(route);
     return result;
+}
+
+/* the connection a session was seen on, see sessionbind() */
+static int try_send_to_bound_client(struct server *server, struct request *origin, struct radmsg *msg, struct reverse_coa_sent *sent) {
+    char key[512];
+    struct sessionbind *b;
+    struct reverse_coa_route *route = NULL;
+    uint8_t attrs[] = {RAD_Attr_CUI, RAD_Attr_Acct_Session_Id};
+    int i, len;
+
+    for (i = 0; i < 2 && !route; i++) {
+        len = sessionbindkey(msg, NULL, attrs[i], key, sizeof(key));
+        if (len <= 0)
+            continue;
+        pthread_mutex_lock(&sessionbind_lock);
+        b = (struct sessionbind *)hash_read(sessionbinds, key, len);
+        if (b) {
+            route = b->route;
+            reverse_coa_route_ref(route);
+        }
+        pthread_mutex_unlock(&sessionbind_lock);
+    }
+    if (!route)
+        return RAD_Err_Request_Not_Routable;
+    debug(DBG_DBG, "try_send_to_bound_client: session bound to a client connection");
+    return send_to_route(server, origin, route, msg, sent);
 }
 
 /* the nas address named in the request: NAS-IP-Address or NAS-IPv6-Address, port 0 */
@@ -1048,7 +1228,7 @@ static int try_send_to_nas_client(struct server *server, struct request *origin,
     return send_to_route(server, origin, route, msg, sent);
 }
 
-/* by token, then the operator-name realm (rfc 8559 3.2); a
+/* by token, then the session binding, then the operator-name realm (rfc 8559 3.2); a
    request without operator-name is routed by nas identity. returns 0 when sent, else
    the Error-Cause for the nak */
 static int dispatch_reverse_coa(struct server *server, struct request *origin, struct radmsg *msg, struct reverse_coa_sent *sent) {
@@ -1059,6 +1239,8 @@ static int dispatch_reverse_coa(struct server *server, struct request *origin, s
     sent->route = NULL;
     /* rfc 8559 3.4: operator-nas-identifier only counts next to operator-name */
     if (realm && !try_send_to_token_client(server, origin, msg, sent))
+        return 0;
+    if (!try_send_to_bound_client(server, origin, msg, sent))
         return 0;
     if (realm) {
         result = try_send_to_realm_clients(server, origin, realm, msg, sent);

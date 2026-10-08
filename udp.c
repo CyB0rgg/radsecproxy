@@ -1,6 +1,5 @@
 /* Copyright (c) 2007-2009, UNINETT AS
- * Copyright (c) 2012-2013, 2017, NORDUnet A/S
- * Copyright (c) 2026, CyB0rgg */
+ * Copyright (c) 2012-2013, 2017, NORDUnet A/S */
 /* See LICENSE for licensing information. */
 
 #include <limits.h>

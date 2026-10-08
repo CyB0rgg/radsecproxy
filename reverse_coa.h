@@ -1,5 +1,4 @@
 /* Copyright (c) 2026, Nova Labs */
-/* Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
 #ifndef _REVERSE_COA_H
@@ -25,6 +24,8 @@ int reverse_coa_token(const struct tlv *attr, char *token);
 void strip_operator_attrs(struct radmsg *msg);
 int reverse_coa_nas_addr(struct radmsg *msg, struct sockaddr_storage *out);
 int client_has_pending_reverse_coa(struct client *client);
+void sessionbind(struct client *client, struct radmsg *msg, struct radmsg *reply);
+int sessionbindkey(struct radmsg *msg, struct radmsg *reply, uint8_t attr, char *buf, size_t bufsize);
 
 /* for the tests */
 int _internal_dispatch_reverse_coa(struct server *server, struct request *origin, struct radmsg *msg);

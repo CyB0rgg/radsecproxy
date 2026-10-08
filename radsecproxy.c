@@ -1,8 +1,7 @@
 /* Copyright (c) 2007-2009, UNINETT AS
  * Copyright (c) 2010-2013,2015-2016, NORDUnet A/S
  * Copyright (c) 2023, SWITCH
- * Copyright (c) 2026, Nova Labs
- * Copyright (c) 2026, CyB0rgg */
+ * Copyright (c) 2026, Nova Labs */
 /* See LICENSE for licensing information. */
 
 /* For UDP there is one server instance consisting of udpserverrd and udpserverth
@@ -1620,6 +1619,8 @@ int radsrv(struct request *rq) {
         goto rmclrqexit;
     }
 
+    sessionbind(from, msg, NULL);
+
     if ((msg->code == RAD_Access_Request || IS_COA_REQUEST(msg->code)) &&
         !ensuremsgauthfront(msg))
         goto rmclrqexit;
@@ -1937,6 +1938,7 @@ int replyh(struct server *server, uint8_t *buf, int len) {
     debug(DBG_DBG, "replyh: passing %s (id %d) to client %s (%s)", radmsgtype2string(msg->code), rqout->rq->rqid, from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
 
 forwardreply:
+    sessionbind(from, rqout->rq->msg, msg);
     msg->id = rqout->rq->rqid;
     memcpy(msg->auth, rqout->rq->rqauth, 16);
 

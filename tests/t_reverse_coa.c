@@ -1,5 +1,4 @@
 /* Copyright (c) 2026, Nova Labs */
-/* Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
 #include "../debug.h"
@@ -167,6 +166,13 @@ static int dispatch(struct server *server, struct radmsg *msg) {
 /* the request queued for the client, NULL if none */
 static struct request *queued(struct client *client) {
     return (struct request *)list_shift(client->replyq->entries);
+}
+
+/* a session binding key: realm, attribute and value, a zero byte after each but the last */
+static int keyis(char *key, int len, char *realm, uint8_t attr, char *value) {
+    int rlen = strlen(realm), vlen = strlen(value);
+
+    return len == rlen + 3 + vlen && !memcmp(key, realm, rlen + 1) && key[rlen + 1] == attr && !key[rlen + 2] && !memcmp(key + rlen + 3, value, vlen);
 }
 
 int main(int argc, char *argv[]) {
@@ -343,6 +349,29 @@ int main(int argc, char *argv[]) {
         freeclient(client);
     }
 
+    /* session binding keys */
+    {
+        struct radmsg *req = request(RAD_Accounting_Request, 9, "4EXAMPLE:XX", NULL);
+        struct radmsg *rep = radmsg_init(RAD_Access_Accept, 9, NULL);
+        char key[512];
+        int len;
+
+        radmsg_add(req, maketlv(RAD_Attr_Acct_Session_Id, 8, (void *)"80e00020"), 0);
+        radmsg_add(rep, maketlv(RAD_Attr_CUI, 4, (void *)"cui1"), 0);
+        len = sessionbindkey(req, NULL, RAD_Attr_Acct_Session_Id, key, sizeof(key));
+        test_ok(keyis(key, len, "4EXAMPLE:XX", RAD_Attr_Acct_Session_Id, "80e00020"), "realm, attribute, value");
+        len = sessionbindkey(req, rep, RAD_Attr_CUI, key, sizeof(key));
+        test_ok(keyis(key, len, "4EXAMPLE:XX", RAD_Attr_CUI, "cui1"), "cui from the reply");
+        test_ok(!sessionbindkey(req, NULL, RAD_Attr_CUI, key, sizeof(key)), "absent attribute no key");
+        radmsg_free(req);
+        req = request(RAD_Accounting_Request, 9, NULL, NULL);
+        radmsg_add(req, maketlv(RAD_Attr_Acct_Session_Id, 8, (void *)"80e00020"), 0);
+        len = sessionbindkey(req, NULL, RAD_Attr_Acct_Session_Id, key, sizeof(key));
+        test_ok(keyis(key, len, "", RAD_Attr_Acct_Session_Id, "80e00020"), "empty realm without operator-name");
+        radmsg_free(req);
+        radmsg_free(rep);
+    }
+
     server = newserver("hub");
     nas = newclient("nas", "nas-1", literalrealm, "192.0.2.10");
     proxy = newclient("proxy", NULL, NULL, "192.0.2.20");
@@ -372,7 +401,7 @@ int main(int argc, char *argv[]) {
     /* dispatch */
     {
         struct request *rq, *origin;
-        struct radmsg *msg, *sent;
+        struct radmsg *msg, *bind, *accept, *sent;
         uint8_t v4[4] = {192, 0, 2, 10};
 
         test_eq(0, dispatch(server, request(RAD_CoA_Request, 10, "1example.com", "nas-1")), "named nas");
@@ -405,6 +434,35 @@ int main(int argc, char *argv[]) {
         msg = request(RAD_CoA_Request, 13, NULL, NULL);
         radmsg_add(msg, makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, REVERSE_COA_TOKEN_LEN, nas->token), 0);
         test_eq(RAD_Err_Request_Not_Routable, dispatch(server, msg), "token without operator-name ignored");
+
+        /* the session binding comes before the realm lookup */
+        msg = request(RAD_Disconnect_Request, 14, "1example.com", NULL);
+        radmsg_add(msg, maketlv(RAD_Attr_Acct_Session_Id, 2, (void *)"s1"), 0);
+        test_eq(RAD_Err_NAS_Identification_Mismatch, _internal_dispatch_reverse_coa(server, NULL, msg), "unbound session 403");
+        bind = request(RAD_Access_Request, 15, "1example.com", NULL);
+        radmsg_add(bind, maketlv(RAD_Attr_Acct_Session_Id, 2, (void *)"s1"), 0);
+        sessionbind(nas, bind, NULL);
+        test_eq(0, _internal_dispatch_reverse_coa(server, NULL, msg), "bound by session");
+        rq = queued(nas);
+        test_ok(rq != NULL, "delivered by session");
+        freerq(rq);
+        bind->code = RAD_Accounting_Request;
+        radmsg_add(bind, maketlvlongint(RAD_Attr_Acct_Status_Type, RAD_Acct_Status_Stop), 0);
+        sessionbind(nas, bind, NULL);
+        test_eq(RAD_Err_NAS_Identification_Mismatch, dispatch(server, msg), "stop unbinds");
+        radmsg_free(bind);
+        bind = request(RAD_Access_Request, 16, "1example.com", NULL);
+        accept = radmsg_init(RAD_Access_Accept, 16, NULL);
+        radmsg_add(accept, maketlv(RAD_Attr_CUI, 4, (void *)"cui1"), 0);
+        sessionbind(nas, bind, accept);
+        msg = request(RAD_Disconnect_Request, 17, "1example.com", NULL);
+        radmsg_add(msg, maketlv(RAD_Attr_CUI, 4, (void *)"cui1"), 0);
+        test_eq(0, dispatch(server, msg), "bound by cui");
+        rq = queued(nas);
+        test_ok(rq != NULL, "delivered by cui");
+        freerq(rq);
+        radmsg_free(bind);
+        radmsg_free(accept);
 
         /* never back to the sender */
         origin = newrequest();

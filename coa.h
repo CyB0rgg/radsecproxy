@@ -1,5 +1,4 @@
 /* Copyright (c) 2026, Nova Labs */
-/* Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
 #ifndef _COA_H

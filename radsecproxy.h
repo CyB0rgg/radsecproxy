@@ -1,8 +1,7 @@
 /* Copyright (c) 2007-2009, UNINETT AS
  * Copyright (c) 2010-2012,2016, NORDUnet A/S
  * Copyright (c) 2023, SWITCH
- * Copyright (c) 2026, Nova Labs
- * Copyright (c) 2026, CyB0rgg */
+ * Copyright (c) 2026, Nova Labs */
 /* See LICENSE for licensing information. */
 
 #ifndef _RADSECPROXY_H
