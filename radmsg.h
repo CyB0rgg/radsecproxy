@@ -1,7 +1,8 @@
 /* Copyright (c) 2007-2008, UNINETT AS
  * Copyright (c) 2015, NORDUnet A/S
  * Copyright (c) 2023, SWITCH
- * Copyright (c) 2026, Nova Labs */
+ * Copyright (c) 2026, Nova Labs
+ * Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
 
 #ifndef _RADMSG_H
@@ -63,8 +64,7 @@
 #define RAD_Attr_NAS_IPv6_Address 95
 #define RAD_Attr_Error_Cause 101
 #define RAD_Attr_Operator_Name 126
-#define RAD_Attr_Extended_Type_1 241
-#define RAD_Extended_Operator_NAS_Id 8
+#define RAD_ExtAttr_Operator_NAS_Identifier (struct extattrtype){241, 8}
 
 #define RAD_ExtAttr_Original_Packet_Code (struct extattrtype){241, 4}
 

@@ -1,7 +1,6 @@
 /* Copyright (c) 2026, Nova Labs */
+/* Copyright (c) 2026, CyB0rgg */
 /* See LICENSE for licensing information. */
-
-/* Regular (forward) CoA/Disconnect proxying per RFC 5176 and RFC 8559. */
 
 #ifndef _COA_H
 #define _COA_H
@@ -17,7 +16,7 @@ struct tlv *make_error_cause_tlv(uint32_t cause);
 
 uint8_t coa_nak_code(uint8_t requestcode);
 
-int event_timestamp_fresh(struct tlv *attr, uint8_t window);
+int event_timestamp_fresh(struct tlv *attr, int window);
 
 #endif /* _COA_H */
 
