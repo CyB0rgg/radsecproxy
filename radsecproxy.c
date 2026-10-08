@@ -1361,7 +1361,6 @@ int radsrv(struct request *rq) {
 
     msg = buf2radmsg(rq->buf, rq->buflen, from->conf->secret, from->conf->secret_len, rqauth_for_parse);
 
-
     if (!msg) {
         debug_limit(DBG_NOTICE, "radsrv: message decode error (code %d, id %d ?) from %s (%s)",
                     rq->buf[0], rq->buf[1], from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
@@ -1998,7 +1997,8 @@ void *clientwr(void *arg) {
     assert(server);
     conf = server->conf;
     int statsrv_period = conf->accept_reverse_coa
-        ? STATUS_SERVER_PERIOD_REVERSE_COA : STATUS_SERVER_PERIOD;
+                             ? STATUS_SERVER_PERIOD_REVERSE_COA
+                             : STATUS_SERVER_PERIOD;
 
 #define ZZZ 900
 
@@ -3081,7 +3081,7 @@ int confclient_cb(struct gconffile **cf, void *arg, char *block, char *opt, char
             conf->reverse_coa_timeout = 30;
         else if (conf->reverse_coa_timeout < 10) {
             debug(DBG_WARN, "reverseCoATimeout %ld too low, using minimum 10s "
-                  "(must outlast upstream RetryInterval x RetryCount for %s)",
+                            "(must outlast upstream RetryInterval x RetryCount for %s)",
                   conf->reverse_coa_timeout, conf->name);
             conf->reverse_coa_timeout = 10;
         } else if (conf->reverse_coa_timeout > 120) {
@@ -3091,7 +3091,7 @@ int confclient_cb(struct gconffile **cf, void *arg, char *block, char *opt, char
         }
     } else if (conf->reverse_coa_timeout != 0) {
         debug(DBG_WARN, "reverseCoATimeout %ld on client %s has no effect: "
-              "reverseCoARealm or NASidentifier is required",
+                        "reverseCoARealm or NASidentifier is required",
               conf->reverse_coa_timeout, conf->name);
     }
 #endif
@@ -3107,7 +3107,7 @@ int confclient_cb(struct gconffile **cf, void *arg, char *block, char *opt, char
 
     if (coaport != LONG_MIN && conf->type != RAD_UDP) {
         debug(DBG_WARN, "CoAPort %ld on client %s ignored: only applies to UDP clients "
-              "(TLS/DTLS use the existing tunnel)",
+                        "(TLS/DTLS use the existing tunnel)",
               coaport, conf->name);
     }
 
