@@ -2811,7 +2811,8 @@ int mergesrvconf(struct clsrvconf *dst, struct clsrvconf *src) {
         !mergeconfstring(&dst->fticks_viscountry, src ? &src->fticks_viscountry : NULL) ||
         !mergeconfstring(&dst->fticks_visinst, src ? &src->fticks_visinst : NULL) ||
         !mergeconfstring(&dst->sniservername, src ? &src->sniservername : NULL) ||
-        !mergeconfstring(&dst->servername, src ? &src->servername : NULL))
+        !mergeconfstring(&dst->servername, src ? &src->servername : NULL) ||
+        !mergeconfstring(&dst->nas_identifier, src ? &src->nas_identifier : NULL))
         return 0;
 
     if (src) {
