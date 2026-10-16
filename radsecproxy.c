@@ -2772,6 +2772,7 @@ void freeclsrvconf(struct clsrvconf *conf) {
         freegconfmstr(conf->confmatchcertattrs);
         freematchcertattr(conf);
 #endif
+        reverse_coa_free_realms(conf);
         freegconfmstr(conf->reverse_coa_realms);
         free(conf->nas_identifier);
         free(conf->name);
@@ -3074,6 +3075,9 @@ int confclient_cb(struct gconffile **cf, void *arg, char *block, char *opt, char
             debugx(1, DBG_ERR, "error in block %s, value of option addTTL is %d, must be 1-255", block, addttl);
         conf->addttl = (uint8_t)addttl;
     }
+
+    if (!reverse_coa_compile_realms(conf))
+        debugx(1, DBG_ERR, "error in block %s, invalid ReverseCoAOperatorRealm", block);
 
     if (conf->reverse_coa_timeout == 0)
         conf->reverse_coa_timeout = 30;

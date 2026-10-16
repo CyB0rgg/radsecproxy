@@ -146,6 +146,50 @@ static struct reverse_coa_realm *reverse_coa_realm_new(const char *value) {
     return NULL;
 }
 
+/* compiles the block's ReverseCoAOperatorRealm values once, at configuration time */
+int reverse_coa_compile_realms(struct clsrvconf *conf) {
+    int i, n;
+
+    for (n = 0; conf->reverse_coa_realms && conf->reverse_coa_realms[n]; n++)
+        ;
+    if (!n)
+        return 1;
+    conf->reverse_coa_regexes = calloc(n, sizeof(regex_t));
+    if (!conf->reverse_coa_regexes)
+        return 0;
+    for (i = 0; i < n; i++)
+        if (!reverse_coa_realm_regcomp(conf->reverse_coa_realms[i], &conf->reverse_coa_regexes[i])) {
+            debug(DBG_ERR, "reverse_coa_compile_realms: invalid ReverseCoAOperatorRealm %s", conf->reverse_coa_realms[i]);
+            while (i--)
+                regfree(&conf->reverse_coa_regexes[i]);
+            free(conf->reverse_coa_regexes);
+            conf->reverse_coa_regexes = NULL;
+            return 0;
+        }
+    return 1;
+}
+
+void reverse_coa_free_realms(struct clsrvconf *conf) {
+    int i;
+
+    if (!conf->reverse_coa_regexes)
+        return;
+    for (i = 0; conf->reverse_coa_realms && conf->reverse_coa_realms[i]; i++)
+        regfree(&conf->reverse_coa_regexes[i]);
+    free(conf->reverse_coa_regexes);
+    conf->reverse_coa_regexes = NULL;
+}
+
+/* returns 1 if one of the block's ReverseCoAOperatorRealm values matches realm */
+static int conf_realm_matches(struct clsrvconf *conf, const char *realm) {
+    int i;
+
+    for (i = 0; conf->reverse_coa_regexes && conf->reverse_coa_realms[i]; i++)
+        if (!regexec(&conf->reverse_coa_regexes[i], realm, 0, NULL, 0))
+            return 1;
+    return 0;
+}
+
 static void reverse_coa_realm_free(struct reverse_coa_realm *r) {
     regfree(&r->regex);
     free(r->value);
@@ -792,6 +836,128 @@ int reverse_coa_nas_addr(struct radmsg *msg, struct sockaddr_storage *out) {
     return 0;
 }
 
+/* returns 1 if NAS-Identifier or Operator-NAS-Identifier equals the block's NASidentifier,
+   0 if not, -1 if the request carries neither */
+static int conf_nas_identifier_match(struct clsrvconf *conf, struct radmsg *msg) {
+    struct tlv *attr;
+    size_t len;
+    int seen = 0;
+
+    if (!conf->nas_identifier)
+        return 0;
+    len = strlen(conf->nas_identifier);
+    attr = radmsg_gettype(msg, RAD_Attr_NAS_Identifier);
+    if (attr) {
+        seen = 1;
+        if (attr->l == len && !memcmp(attr->v, conf->nas_identifier, len))
+            return 1;
+    }
+    attr = radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier);
+    if (attr) {
+        seen = 1;
+        if (attr->l == len + 1 && !memcmp(attr->v + 1, conf->nas_identifier, len))
+            return 1;
+    }
+    return seen ? 0 : -1;
+}
+
+/* the single host a client block names, if it names exactly one */
+static int conf_host_addr(struct clsrvconf *conf, struct sockaddr_storage *out) {
+    struct hostportres *hp;
+
+    if (!conf->hostports || list_count(conf->hostports) != 1)
+        return 0;
+    hp = (struct hostportres *)list_first(conf->hostports)->data;
+    if (!hp || hp->prefixlen != 255 || !hp->addrinfo || !hp->addrinfo->ai_addr)
+        return 0;
+    memset(out, 0, sizeof(*out));
+    memcpy(out, hp->addrinfo->ai_addr, hp->addrinfo->ai_addrlen);
+    return 1;
+}
+
+#ifdef RADPROT_UDP
+/* a udp nas with no client entry right now (idle, or never seen): find or create the
+   entry for addr in its client block and send */
+static int send_to_udp_block(struct server *server, struct clsrvconf *conf,
+                             struct sockaddr *addr, struct radmsg *msg, struct reverse_coa_sent *sent) {
+    struct list_node *node;
+    struct client *client = NULL;
+    struct reverse_coa_route *route = NULL;
+    struct timeval now;
+    char tmp[INET6_ADDRSTRLEN];
+    int sock;
+
+    sock = udplistenersocket(addr->sa_family);
+    if (sock < 0) {
+        debug(DBG_WARN, "send_to_udp_block: no udp listener for the address family of %s", addr2string(addr, tmp, sizeof(tmp)));
+        return RAD_Err_Request_Not_Routable;
+    }
+    pthread_mutex_lock(conf->lock);
+    for (node = list_first(conf->clients); node; node = list_next(node)) {
+        client = (struct client *)node->data;
+        if (client->sock == sock && addr_equal_ip(client->addr, addr))
+            break;
+        client = NULL;
+    }
+    if (!client) {
+        client = addclient(conf, sock, addr, 0);
+        if (client)
+            debug(DBG_INFO, "send_to_udp_block: created client %s (%s) for reverse coa", conf->name, addr2string(addr, tmp, sizeof(tmp)));
+    }
+    if (client) {
+        gettimeofday(&now, NULL);
+        client->expiry = now.tv_sec + 60;
+        route = client->reverse_coa_route;
+        reverse_coa_route_ref(route);
+    }
+    pthread_mutex_unlock(conf->lock);
+    if (!client) {
+        debug(DBG_ERR, "send_to_udp_block: addclient failed for %s", conf->name);
+        return RAD_Err_Resources_Unavailable;
+    }
+    return send_to_route(server, route, msg, sent);
+}
+
+/* the client block covering the address in NAS-IP-Address or NAS-IPv6-Address, or the
+   block naming a single host whose NASidentifier the request names. with a realm, the
+   block must declare it with ReverseCoAOperatorRealm; a block declaring it for another nas
+   gives 403 */
+static int try_send_to_udp_block(struct server *server, const char *realm,
+                                 struct radmsg *msg, struct reverse_coa_sent *sent) {
+    struct sockaddr_storage addr;
+    struct clsrvconf *conf = NULL;
+    struct list_node *cur = NULL;
+    char tmp[INET6_ADDRSTRLEN];
+    int result = RAD_Err_Request_Not_Routable;
+
+    if (reverse_coa_nas_addr(msg, &addr)) {
+        conf = find_clconf(RAD_UDP, (struct sockaddr *)&addr, NULL, NULL);
+        if (conf && realm && !conf_realm_matches(conf, realm))
+            conf = NULL;
+        if (conf && conf->nas_identifier && conf_nas_identifier_match(conf, msg) == 0) {
+            debug(DBG_INFO, "try_send_to_udp_block: client %s matches %s but NASidentifier differs", conf->name, addr2string((struct sockaddr *)&addr, tmp, sizeof(tmp)));
+            return RAD_Err_NAS_Identification_Mismatch;
+        }
+    } else {
+        while ((conf = find_clconf_type(RAD_UDP, &cur)))
+            if (conf_nas_identifier_match(conf, msg) == 1 && conf_host_addr(conf, &addr) && (!realm || conf_realm_matches(conf, realm)))
+                break;
+    }
+    if (conf) {
+        if (conf->nas_identifier || conf->add_operator_nas_id || conf->reverse_coa_realms)
+            return send_to_udp_block(server, conf, (struct sockaddr *)&addr, msg, sent);
+        debug(DBG_INFO, "try_send_to_udp_block: client %s not configured for reverse coa", conf->name);
+        return result;
+    }
+    /* rfc 8559 3.3: the realm is ours but the nas is not known */
+    if (realm)
+        for (cur = NULL; (conf = find_clconf_type(RAD_UDP, &cur));)
+            if (conf_realm_matches(conf, realm))
+                result = RAD_Err_NAS_Identification_Mismatch;
+    return result;
+}
+#endif
+
 /* the connection named by the token we added on the way out; a udp token names the
    client block, the nas address picks the entry */
 static int try_send_to_token_client(struct server *server, struct radmsg *msg, struct reverse_coa_sent *sent) {
@@ -800,6 +966,10 @@ static int try_send_to_token_client(struct server *server, struct radmsg *msg, s
     struct sockaddr_storage addr;
     char token[REVERSE_COA_TOKEN_LEN + 1];
     int has_addr;
+#ifdef RADPROT_UDP
+    struct clsrvconf *conf;
+    struct list_node *cur = NULL;
+#endif
 
     if (!reverse_coa_token(radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier), token))
         return RAD_Err_Request_Not_Routable;
@@ -821,6 +991,12 @@ static int try_send_to_token_client(struct server *server, struct radmsg *msg, s
         debug(DBG_DBG, "try_send_to_token_client: operator-nas-identifier names a client connection");
         return send_to_route(server, route, msg, sent);
     }
+#ifdef RADPROT_UDP
+    if (has_addr)
+        while ((conf = find_clconf_type(RAD_UDP, &cur)))
+            if (!strcmp(conf->token, token) && addressmatches(conf->hostports, (struct sockaddr *)&addr, 0, NULL))
+                return send_to_udp_block(server, conf, (struct sockaddr *)&addr, msg, sent);
+#endif
     debug(DBG_INFO, "try_send_to_token_client: the connection named by operator-nas-identifier is gone");
     return RAD_Err_Request_Not_Routable;
 }
@@ -915,12 +1091,20 @@ static int dispatch_reverse_coa(struct server *server, struct radmsg *msg, struc
         return 0;
     if (realm) {
         result = try_send_to_realm_clients(server, realm, msg, sent);
+#ifdef RADPROT_UDP
+        if (result == RAD_Err_Request_Not_Routable)
+            result = try_send_to_udp_block(server, realm, msg, sent);
+#endif
         if (result)
             debug_limit(DBG_INFO, "dispatch_reverse_coa: no route for %s (id %d) with operator-name realm %s, Error-Cause %d",
                         radmsgtype2string(msg->code), msg->id, realm, result);
         return result;
     }
     result = try_send_to_nas_client(server, msg, sent);
+#ifdef RADPROT_UDP
+    if (result == RAD_Err_Request_Not_Routable)
+        result = try_send_to_udp_block(server, NULL, msg, sent);
+#endif
     if (result)
         debug_limit(DBG_INFO, "dispatch_reverse_coa: no route for %s (id %d) without operator-name, Error-Cause %d",
                     radmsgtype2string(msg->code), msg->id, result);

@@ -6,6 +6,7 @@ unreleased changes
 	- Reverse CoA: route CoA/Disconnect-Request from a server down to the client (#186)
 	- CoA/Disconnect-Request proxying by Operator-Name to coaServer blocks (#206)
 	- Operator-NAS-Identifier for reverse CoA routing
+	- Reach idle udp clients for reverse CoA from their client block
 
 	Misc:
 	- Prevent TLS connections to self

@@ -635,7 +635,9 @@ This client is the NAS. A reverse CoA-Request or Disconnect-Request whose
 NAS-Identifier or Operator-NAS-Identifier equals \fIidentifier\fR, or whose
 NAS-IP-Address or NAS-IPv6-Address is the client's address, is delivered here with
 Operator-Name and Operator-NAS-Identifier removed and NAS identification added if
-missing (RFC 8559 section 4.2). A proxy
+missing (RFC 8559 section 4.2). An idle udp client is reached by NAS-IP-Address,
+NAS-IPv6-Address or, if the block names a single host, by \fIidentifier\fR; with several
+\fBListenUDP\fR addresses it is sent from the first one of the address family. A proxy
 below this one is configured with \fBReverseCoAOperatorRealm\fR only, never \fBNASidentifier\fR.
 .RE
 

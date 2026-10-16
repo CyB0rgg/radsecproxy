@@ -68,6 +68,33 @@ struct client_sock {
 
 static struct list *client_sock;
 static struct gqueue *server_replyq = NULL;
+static int udp_listener_v4 = -1, udp_listener_v6 = -1;
+static pthread_mutex_t udp_listener_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* one listening socket per family, for reverse coa to a client we have not heard from */
+static void rememberlistener(int s) {
+    struct sockaddr_storage ss;
+    socklen_t len = sizeof(ss);
+
+    if (getsockname(s, (struct sockaddr *)&ss, &len))
+        return;
+    pthread_mutex_lock(&udp_listener_lock);
+    if (ss.ss_family == AF_INET && udp_listener_v4 < 0)
+        udp_listener_v4 = s;
+    else if (ss.ss_family == AF_INET6 && udp_listener_v6 < 0)
+        udp_listener_v6 = s;
+    pthread_mutex_unlock(&udp_listener_lock);
+}
+
+int udplistenersocket(int family) {
+    int s;
+
+    pthread_mutex_lock(&udp_listener_lock);
+    s = family == AF_INET6 ? udp_listener_v6 : udp_listener_v4;
+    pthread_mutex_unlock(&udp_listener_lock);
+    return s;
+}
+
 static struct addrinfo *srcres = NULL;
 static uint8_t handle;
 static struct commonprotoopts *protoopts = NULL;
@@ -318,6 +345,7 @@ void *udpserverrd(void *arg) {
     struct request *rq;
     int *sp = (int *)arg;
 
+    rememberlistener(*sp);
     for (;;) {
         rq = newrequest();
         if (!rq) {
