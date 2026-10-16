@@ -1613,6 +1613,8 @@ int radsrv(struct request *rq) {
         goto rmclrqexit;
     }
 
+    sessionbind(from, msg, NULL);
+
     if ((msg->code == RAD_Access_Request || IS_COA_REQUEST(msg->code)) &&
         !ensuremsgauthfront(msg))
         goto rmclrqexit;
@@ -1930,6 +1932,7 @@ int replyh(struct server *server, uint8_t *buf, int len) {
     debug(DBG_DBG, "replyh: passing %s (id %d) to client %s (%s)", radmsgtype2string(msg->code), rqout->rq->rqid, from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
 
 forwardreply:
+    sessionbind(from, rqout->rq->msg, msg);
     msg->id = rqout->rq->rqid;
     memcpy(msg->auth, rqout->rq->rqauth, 16);
 

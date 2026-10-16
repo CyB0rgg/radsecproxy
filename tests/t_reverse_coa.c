@@ -27,6 +27,7 @@ static uint8_t *secret = (uint8_t *)"testing123";
 static int secretlen = 10;
 static char *literalrealm[] = {"Example.COM", NULL};
 static char *regexprealm[] = {"/\\.example\\.net$/", NULL};
+static char *proxyrealm[] = {"example.org", NULL};
 
 /* the last packet sent to the originating server */
 static uint8_t *sentbuf;
@@ -112,6 +113,11 @@ static struct client *newclient(char *name, char *nasid, char **realms, char *ad
     return newclienttype(RAD_UDP, name, nasid, realms, addr);
 }
 
+/* a tls client without NASidentifier, a proxy towards the nas */
+static struct client *newproxy(char *name, char **realms, char *addr) {
+    return newclienttype(RAD_TLS, name, NULL, realms, addr);
+}
+
 static void freeclient(struct client *client) {
     unregister_reverse_coa_client(client);
     free_reverse_coa_rqs(client);
@@ -162,6 +168,14 @@ static struct radmsg *request(uint8_t code, uint8_t id, char *opname, char *nasi
     return msg;
 }
 
+/* a request carrying an Acct-Session-Id or a CUI, from or to a client */
+static struct radmsg *session(uint8_t code, uint8_t id, char *opname, uint8_t attr, char *value) {
+    struct radmsg *msg = request(code, id, opname, NULL);
+
+    radmsg_add(msg, maketlv(attr, strlen(value), value), 0);
+    return msg;
+}
+
 /* routes msg from server and frees it */
 static int dispatch(struct server *server, struct radmsg *msg) {
     int result = _internal_dispatch_reverse_coa(server, msg);
@@ -173,6 +187,13 @@ static int dispatch(struct server *server, struct radmsg *msg) {
 /* the request queued for the client, NULL if none */
 static struct request *queued(struct client *client) {
     return (struct request *)list_shift(client->replyq->entries);
+}
+
+/* a session binding key: realm, attribute and value, a zero byte after each but the last */
+static int keyis(char *key, int len, char *realm, uint8_t attr, char *value) {
+    int rlen = strlen(realm), vlen = strlen(value);
+
+    return len == rlen + 3 + vlen && !memcmp(key, realm, rlen + 1) && key[rlen + 1] == attr && !key[rlen + 2] && !memcmp(key + rlen + 3, value, vlen);
 }
 
 int main(int argc, char *argv[]) {
@@ -371,6 +392,29 @@ int main(int argc, char *argv[]) {
         freeclient(client);
     }
 
+    /* session binding keys */
+    {
+        struct radmsg *req = request(RAD_Accounting_Request, 9, "4EXAMPLE:XX", NULL);
+        struct radmsg *rep = radmsg_init(RAD_Access_Accept, 9, NULL);
+        char key[512];
+        int len;
+
+        radmsg_add(req, maketlv(RAD_Attr_Acct_Session_Id, 8, (void *)"80e00020"), 0);
+        radmsg_add(rep, maketlv(RAD_Attr_CUI, 4, (void *)"cui1"), 0);
+        len = sessionbindkey(req, NULL, RAD_Attr_Acct_Session_Id, key, sizeof(key));
+        test_ok(keyis(key, len, "4EXAMPLE:XX", RAD_Attr_Acct_Session_Id, "80e00020"), "realm, attribute, value");
+        len = sessionbindkey(req, rep, RAD_Attr_CUI, key, sizeof(key));
+        test_ok(keyis(key, len, "4EXAMPLE:XX", RAD_Attr_CUI, "cui1"), "cui from the reply");
+        test_ok(!sessionbindkey(req, NULL, RAD_Attr_CUI, key, sizeof(key)), "absent attribute no key");
+        radmsg_free(req);
+        req = request(RAD_Accounting_Request, 9, NULL, NULL);
+        radmsg_add(req, maketlv(RAD_Attr_Acct_Session_Id, 8, (void *)"80e00020"), 0);
+        len = sessionbindkey(req, NULL, RAD_Attr_Acct_Session_Id, key, sizeof(key));
+        test_ok(keyis(key, len, "", RAD_Attr_Acct_Session_Id, "80e00020"), "empty realm without operator-name");
+        radmsg_free(req);
+        radmsg_free(rep);
+    }
+
     server = newserver("hub");
     nas = newclient("nas", "nas-1", literalrealm, "192.0.2.10");
     proxy = newclient("proxy", NULL, NULL, "192.0.2.20");
@@ -415,7 +459,7 @@ int main(int argc, char *argv[]) {
     /* dispatch */
     {
         struct request *rq;
-        struct radmsg *msg, *sent;
+        struct radmsg *msg, *bind, *accept, *sent;
         uint8_t v4[4] = {192, 0, 2, 10};
 
         test_eq(0, dispatch(server, request(RAD_CoA_Request, 10, "1example.com", "nas-1")), "named nas");
@@ -449,6 +493,125 @@ int main(int argc, char *argv[]) {
         radmsg_add(msg, makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, REVERSE_COA_TOKEN_LEN, nas->token), 0);
         test_eq(RAD_Err_Request_Not_Routable, dispatch(server, msg), "token without operator-name ignored");
 
+        /* the session binding orders the proxies of a realm, never over a named nas */
+        {
+            struct client *p1 = newproxy("p1", proxyrealm, "192.0.2.41");
+            struct client *p2 = newproxy("p2", proxyrealm, "192.0.2.42");
+            struct client *p3 = newproxy("p3", literalrealm, "192.0.2.43");
+            char key[512];
+            int len;
+
+            msg = session(RAD_Disconnect_Request, 14, "1example.org", RAD_Attr_Acct_Session_Id, "s9");
+            test_eq(0, dispatch(server, msg), "unbound session to a proxy");
+            rq = queued(p1);
+            test_ok(rq && !queued(p2), "first proxy without a binding");
+            freerq(rq);
+
+            bind = session(RAD_Access_Request, 15, "1example.org", RAD_Attr_Acct_Session_Id, "s1");
+            sessionbind(p2, bind, NULL);
+            test_eq(0, dispatch(server, session(RAD_Disconnect_Request, 16, "1example.org", RAD_Attr_Acct_Session_Id, "s1")), "bound session");
+            rq = queued(p2);
+            test_ok(rq && !queued(p1), "the bound proxy goes first");
+            freerq(rq);
+            bind->code = RAD_Accounting_Request;
+            radmsg_add(bind, maketlvlongint(RAD_Attr_Acct_Status_Type, RAD_Acct_Status_Stop), 0);
+            sessionbind(p2, bind, NULL);
+            test_eq(0, dispatch(server, session(RAD_Disconnect_Request, 17, "1example.org", RAD_Attr_Acct_Session_Id, "s1")), "after stop");
+            rq = queued(p1);
+            test_ok(rq && !queued(p2), "stop unbinds");
+            freerq(rq);
+            radmsg_free(bind);
+
+            bind = request(RAD_Access_Request, 18, "1example.org", NULL);
+            accept = radmsg_init(RAD_Access_Accept, 18, NULL);
+            radmsg_add(accept, maketlv(RAD_Attr_CUI, 4, (void *)"cui1"), 0);
+            sessionbind(p2, bind, accept);
+            test_eq(0, dispatch(server, session(RAD_Disconnect_Request, 19, "1example.org", RAD_Attr_CUI, "cui1")), "bound by cui");
+            rq = queued(p2);
+            test_ok(rq && !queued(p1), "cui from the access-accept");
+            freerq(rq);
+            radmsg_free(bind);
+            radmsg_free(accept);
+
+            /* bound to p1 by the last writer, p2 would win; ambiguous, the first proxy does */
+            bind = session(RAD_Access_Request, 20, "1example.org", RAD_Attr_Acct_Session_Id, "s3");
+            sessionbind(p2, bind, NULL);
+            sessionbind(p1, bind, NULL);
+            sessionbind(p2, bind, NULL);
+            test_eq(0, dispatch(server, session(RAD_Disconnect_Request, 21, "1example.org", RAD_Attr_Acct_Session_Id, "s3")), "ambiguous key");
+            rq = queued(p1);
+            test_ok(rq && !queued(p2), "a key seen on two connections is not used");
+            freerq(rq);
+            radmsg_free(bind);
+
+            bind = session(RAD_Access_Request, 22, "1example.com", RAD_Attr_Acct_Session_Id, "s4");
+            sessionbind(p1, bind, NULL);
+            len = sessionbindkey(bind, NULL, RAD_Attr_Acct_Session_Id, key, sizeof(key));
+            test_ok(!_internal_sessionbindfind(key, len), "no binding for a realm the client is not registered for");
+            radmsg_free(bind);
+            bind = session(RAD_Access_Request, 23, NULL, RAD_Attr_Acct_Session_Id, "s5");
+            sessionbind(p1, bind, NULL);
+            len = sessionbindkey(bind, NULL, RAD_Attr_Acct_Session_Id, key, sizeof(key));
+            test_ok(!_internal_sessionbindfind(key, len), "no binding without operator-name");
+            radmsg_free(bind);
+
+            bind = session(RAD_Access_Request, 24, "1example.com", RAD_Attr_Acct_Session_Id, "s6");
+            sessionbind(p3, bind, NULL);
+            msg = session(RAD_Disconnect_Request, 25, "1example.com", RAD_Attr_Acct_Session_Id, "s6");
+            radmsg_add(msg, maketlv(RAD_Attr_NAS_Identifier, 5, (void *)"nas-1"), 0);
+            test_eq(0, dispatch(server, msg), "named nas with a bound session");
+            rq = queued(nas);
+            test_ok(rq && !queued(p3), "a named nas is not overridden by a binding");
+            freerq(rq);
+            radmsg_free(bind);
+
+            freeclient(p3);
+            freeclient(p2);
+            freeclient(p1);
+        }
+    }
+
+    /* session table */
+    {
+        char key[32];
+        uint32_t n, before;
+        int i;
+
+        before = _internal_sessionbindcount();
+        _internal_sessionbindset(nas->reverse_coa_route, "k1", 2);
+        _internal_sessionbindset(nas->reverse_coa_route, "k2", 2);
+        _internal_sessionbindset(nas->reverse_coa_route, "k3", 2);
+        test_eq(before + 3, _internal_sessionbindcount(), "three entries");
+        _internal_sessionbindset(nas->reverse_coa_route, "k1", 2);
+        test_eq(before + 3, _internal_sessionbindcount(), "same key once");
+        test_ok(_internal_sessionbindfind("k2", 2), "entry found");
+        test_ok(!_internal_sessionbindfind("k9", 2), "unknown key not found");
+        for (i = 0; before + 3 + i < 65536; i++) {
+            n = snprintf(key, sizeof(key), "fill%d", i);
+            _internal_sessionbindset(nas->reverse_coa_route, key, n);
+        }
+        test_eq(65536, _internal_sessionbindcount(), "at the limit");
+        /* one more than the entries older than k2 go in, so k2 is the one evicted last */
+        for (i = 0; i < (int)before + 1; i++) {
+            n = snprintf(key, sizeof(key), "more%d", i);
+            _internal_sessionbindset(nas->reverse_coa_route, key, n);
+        }
+        test_eq(65536, _internal_sessionbindcount(), "limit holds");
+        test_ok(!_internal_sessionbindfind("k2", 2), "oldest evicted");
+        test_ok(_internal_sessionbindfind("k1", 2), "touched entry kept");
+        _internal_sessionbindclear("k1", 2);
+        test_ok(!_internal_sessionbindfind("k1", 2), "cleared");
+        test_eq(65535, _internal_sessionbindcount(), "count after clear");
+        for (i = 0; i < 65536; i++) {
+            n = snprintf(key, sizeof(key), "fill%d", i);
+            _internal_sessionbindclear(key, n);
+        }
+        for (i = 0; i < (int)before + 1; i++) {
+            n = snprintf(key, sizeof(key), "more%d", i);
+            _internal_sessionbindclear(key, n);
+        }
+        _internal_sessionbindclear("k3", 2);
+        test_eq(0, _internal_sessionbindcount(), "table emptied");
     }
 
     /* duplicates */

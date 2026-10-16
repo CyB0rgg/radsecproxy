@@ -374,8 +374,8 @@ drops duplicates (per-server slots keyed by id and authenticator, 300s).
 dispatch_reverse_coa() then tries the client named by the token we added
 as Operator-NAS-Identifier, the clients registered with ReverseCoAOperatorRealm for
 the Operator-Name realm (literal values before regexps, a named NAS before
-a proxy) and, without Operator-Name, a client named by NASidentifier or
-address. An idle udp NAS is made from its
+a proxy, the bound proxy before the others) and, without Operator-Name, a
+client named by NASidentifier or address. An idle udp NAS is made from its
 client block if the block declares the realm; the ReverseCoAOperatorRealm values
 of a block are compiled once, by reverse_coa_compile_realms().
 
@@ -395,7 +395,18 @@ findreversecoaclient().
 
 A proxy with several client connections for one operator must send a
 CoA down the connection that carried the session. The token we add as
-Operator-NAS-Identifier does that when the home server echoes it.
+Operator-NAS-Identifier does that when the home server echoes it; the
+session binding is the fallback when it does not, or the connection it
+named is gone. sessionbind() binds Acct-Session-Id from a request, and
+Chargeable-User-Identity from the Access-Accept, with the Operator-Name
+realm to the client the session came through, only for a realm the client
+is registered for; a Stop unbinds. A key seen on two connections is
+marked ambiguous and not used. The binding only orders the proxies of a
+realm, it never overrides a NAS the request names. The table
+has 4096 buckets and an age list, at most 65536 entries kept for a day,
+so a lookup, a refresh and the eviction of the oldest entry cost the
+same whatever the number of sessions; a plain list cost a full walk per
+request at the limit, under the one lock every request takes.
 The token is random, made in addclient() per connection or per udp block.
 
 Locks, in the order they are taken: the client conf lock, the registry
@@ -405,7 +416,7 @@ sets its target to NULL under the refmutex, so a send in progress
 finishes before the client goes. forward_coa_response() holds the
 global request lock (removeclientrqs_sendrq_freeserver_lock()) from the
 slot read to the end of the send, as that is the lock the server and
-client teardown take.
+client teardown take. The binding table has its own lock.
 
 A udp client entry with a request pending is never swept. A request not
 answered within reverseCoATimeout is dropped with a notice and the
