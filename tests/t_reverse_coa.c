@@ -91,6 +91,7 @@ static struct client *newclienttype(uint8_t type, char *name, char *nasid, char 
     conf->secret_len = secretlen;
     conf->nas_identifier = nasid;
     conf->reverse_coa_realms = realms;
+    reverse_coa_compile_realms(conf);
     conf->coaport = 3799;
     conf->reverse_coa_timeout = 30;
     conf->lock = malloc(sizeof(pthread_mutex_t));
@@ -119,6 +120,7 @@ static void freeclient(struct client *client) {
     pthread_mutex_destroy(&client->lock);
     free(client->addr);
     list_free(client->conf->clients);
+    reverse_coa_free_realms(client->conf);
     pthread_mutex_destroy(client->conf->lock);
     free(client->conf->lock);
     free(client->conf);
@@ -313,6 +315,20 @@ int main(int argc, char *argv[]) {
         test_ok(_internal_match_nas_identifier(client, msg), "operator-nas-identifier");
         radmsg_free(msg);
         freeclient(client);
+    }
+
+    /* realm values of a block, compiled once */
+    {
+        struct clsrvconf conf;
+        char *good[] = {"Example.COM", "/\\.example\\.net$/", NULL}, *bad[] = {"/[unclosed/", NULL};
+
+        memset(&conf, 0, sizeof(conf));
+        conf.reverse_coa_realms = good;
+        test_ok(reverse_coa_compile_realms(&conf) && conf.reverse_coa_regexes, "realm values compiled");
+        reverse_coa_free_realms(&conf);
+        test_ok(!conf.reverse_coa_regexes, "compiled realm values freed");
+        conf.reverse_coa_realms = bad;
+        test_ok(!reverse_coa_compile_realms(&conf) && !conf.reverse_coa_regexes, "invalid regexp rejected");
     }
 
     /* relayed message-authenticator */

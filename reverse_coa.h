@@ -24,6 +24,8 @@ int reverse_coa_token(const struct tlv *attr, char *token);
 void strip_operator_attrs(struct radmsg *msg);
 int reverse_coa_nas_addr(struct radmsg *msg, struct sockaddr_storage *out);
 int client_has_pending_reverse_coa(struct client *client);
+int reverse_coa_compile_realms(struct clsrvconf *conf);
+void reverse_coa_free_realms(struct clsrvconf *conf);
 
 /* for the tests */
 int _internal_dispatch_reverse_coa(struct server *server, struct radmsg *msg);

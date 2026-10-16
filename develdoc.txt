@@ -375,7 +375,9 @@ dispatch_reverse_coa() then tries the client named by the token we added
 as Operator-NAS-Identifier, the clients registered with ReverseCoAOperatorRealm for
 the Operator-Name realm (literal values before regexps, a named NAS before
 a proxy) and, without Operator-Name, a client named by NASidentifier or
-address.
+address. An idle udp NAS is made from its
+client block if the block declares the realm; the ReverseCoAOperatorRealm values
+of a block are compiled once, by reverse_coa_compile_realms().
 
 send_coa_to_client() copies the message, strips Operator-Name and
 Operator-NAS-Identifier when the client is the NAS, takes a free id

@@ -204,6 +204,7 @@ struct clsrvconf {
     uint8_t reqmsgauthproxy;
     uint8_t protocolerror;
     char **reverse_coa_realms;
+    regex_t *reverse_coa_regexes; /* reverse_coa_realms compiled, see reverse_coa_compile_realms() */
     uint8_t accept_reverse_coa;
     char *nas_identifier;
     long reverse_coa_timeout;
