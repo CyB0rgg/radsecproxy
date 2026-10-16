@@ -23,13 +23,15 @@ char *extract_operator_realm(struct radmsg *msg, char *buf, size_t bufsize) {
 
     for (node = list_first(attrs); node; node = list_next(node)) {
         struct tlv *attr = node->data;
-        /* namespace 1 is the realm (rfc 5580 4.1), the routing key of rfc 8559 3.2 */
-        if (attr->l < 2 || attr->v[0] != '1')
+        const uint8_t *start;
+        if (attr->l < 2)
             continue;
-        len = attr->l - 1;
+        /* namespace 1 (realm, rfc 5580 4.1): match the realm; any other: match the whole value */
+        start = attr->v[0] == '1' ? attr->v + 1 : attr->v;
+        len = attr->l - (int)(start - attr->v);
         if (len > (int)bufsize - 1)
             len = (int)bufsize - 1;
-        memcpy(buf, attr->v + 1, len);
+        memcpy(buf, start, len);
         buf[len] = '\0';
         result = buf;
         break;
