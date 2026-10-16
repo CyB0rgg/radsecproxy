@@ -676,11 +676,11 @@ static int send_reverse_coa_nak(struct server *server, struct radmsg *req, uint3
     return 1;
 }
 
-/* sends a copy of msg to the client with a new id and keeps it for the response
-   to from_server. returns 0 when sent, else the
+/* sends a copy of msg to the client with a new id and keeps it for the response.
+   from_server or origin says where the response goes. returns 0 when sent, else the
    Error-Cause for the nak. the caller holds the client's route locked, so the client
    cannot go away meanwhile */
-static int send_coa_to_client(struct server *from_server, struct client *to_client,
+static int send_coa_to_client(struct server *from_server, struct request *origin, struct client *to_client,
                               struct radmsg *msg, struct reverse_coa_sent *sent) {
     struct request *rq;
     struct rqout *rqout;
@@ -691,6 +691,11 @@ static int send_coa_to_client(struct server *from_server, struct client *to_clie
 
     if (!to_client->reverse_coa_route) {
         debug(DBG_WARN, "send_coa_to_client: client %s not configured for reverse coa", to_client->conf->name);
+        return RAD_Err_Request_Not_Routable;
+    }
+    if (origin && origin->from == to_client) {
+        debug(DBG_INFO, "send_coa_to_client: %s (id %d) from client %s would go back to its sender, ignoring",
+              radmsgtype2string(msg->code), msg->id, to_client->conf->name);
         return RAD_Err_Request_Not_Routable;
     }
 
@@ -745,6 +750,7 @@ static int send_coa_to_client(struct server *from_server, struct client *to_clie
     rq->rqid = msg->id;
     memcpy(rq->rqauth, msg->auth, 16);
     rq->to = from_server;
+    rq->origin = origin ? newrqref(origin) : NULL;
     rq->from = to_client;
     rq->udpsock = to_client->sock;
     rq->newid = newid;
@@ -1013,13 +1019,13 @@ void sessionbind(struct client *client, struct radmsg *msg, struct radmsg *reply
 
 /* sends down a route taken from the registry or the binding table, the caller holds
    a reference which moves to sent when the request went out */
-static int send_to_route(struct server *server, struct reverse_coa_route *route,
+static int send_to_route(struct server *server, struct request *origin, struct reverse_coa_route *route,
                          struct radmsg *msg, struct reverse_coa_sent *sent) {
     int result = RAD_Err_Request_Not_Routable;
 
     pthread_mutex_lock(&route->refmutex);
     if (route->target)
-        result = send_coa_to_client(server, route->target, msg, sent);
+        result = send_coa_to_client(server, origin, route->target, msg, sent);
     pthread_mutex_unlock(&route->refmutex);
     if (result)
         reverse_coa_route_deref(route);
@@ -1115,7 +1121,7 @@ static int conf_host_addr(struct clsrvconf *conf, struct sockaddr_storage *out) 
 #ifdef RADPROT_UDP
 /* a udp nas with no client entry right now (idle, or never seen): find or create the
    entry for addr in its client block and send */
-static int send_to_udp_block(struct server *server, struct clsrvconf *conf,
+static int send_to_udp_block(struct server *server, struct request *origin, struct clsrvconf *conf,
                              struct sockaddr *addr, struct radmsg *msg, struct reverse_coa_sent *sent) {
     struct list_node *node;
     struct client *client = NULL;
@@ -1152,14 +1158,14 @@ static int send_to_udp_block(struct server *server, struct clsrvconf *conf,
         debug(DBG_ERR, "send_to_udp_block: addclient failed for %s", conf->name);
         return RAD_Err_Resources_Unavailable;
     }
-    return send_to_route(server, route, msg, sent);
+    return send_to_route(server, origin, route, msg, sent);
 }
 
 /* the client block covering the address in NAS-IP-Address or NAS-IPv6-Address, or the
    block naming a single host whose NASidentifier the request names. with a realm, the
    block must declare it with ReverseCoAOperatorRealm; a block declaring it for another nas
    gives 403 */
-static int try_send_to_udp_block(struct server *server, const char *realm,
+static int try_send_to_udp_block(struct server *server, struct request *origin, const char *realm,
                                  struct radmsg *msg, struct reverse_coa_sent *sent) {
     struct sockaddr_storage addr;
     struct clsrvconf *conf = NULL;
@@ -1182,7 +1188,7 @@ static int try_send_to_udp_block(struct server *server, const char *realm,
     }
     if (conf) {
         if (conf->nas_identifier || conf->add_operator_nas_id || conf->reverse_coa_realms)
-            return send_to_udp_block(server, conf, (struct sockaddr *)&addr, msg, sent);
+            return send_to_udp_block(server, origin, conf, (struct sockaddr *)&addr, msg, sent);
         debug(DBG_INFO, "try_send_to_udp_block: client %s not configured for reverse coa", conf->name);
         return result;
     }
@@ -1197,7 +1203,7 @@ static int try_send_to_udp_block(struct server *server, const char *realm,
 
 /* the connection named by the token we added on the way out; a udp token names the
    client block, the nas address picks the entry */
-static int try_send_to_token_client(struct server *server, struct radmsg *msg, struct reverse_coa_sent *sent) {
+static int try_send_to_token_client(struct server *server, struct request *origin, struct radmsg *msg, struct reverse_coa_sent *sent) {
     struct reverse_coa_route *route = NULL, *candidate;
     struct list_node *node;
     struct sockaddr_storage addr;
@@ -1226,13 +1232,13 @@ static int try_send_to_token_client(struct server *server, struct radmsg *msg, s
     pthread_mutex_unlock(&realm_reverse_coa_lock);
     if (route) {
         debug(DBG_DBG, "try_send_to_token_client: operator-nas-identifier names a client connection");
-        return send_to_route(server, route, msg, sent);
+        return send_to_route(server, origin, route, msg, sent);
     }
 #ifdef RADPROT_UDP
     if (has_addr)
         while ((conf = find_clconf_type(RAD_UDP, &cur)))
             if (!strcmp(conf->token, token) && addressmatches(conf->hostports, (struct sockaddr *)&addr, 0, NULL))
-                return send_to_udp_block(server, conf, (struct sockaddr *)&addr, msg, sent);
+                return send_to_udp_block(server, origin, conf, (struct sockaddr *)&addr, msg, sent);
 #endif
     debug(DBG_INFO, "try_send_to_token_client: the connection named by operator-nas-identifier is gone");
     return RAD_Err_Request_Not_Routable;
@@ -1243,7 +1249,7 @@ static int try_send_to_token_client(struct server *server, struct radmsg *msg, s
    and none is named. literal realm values are tried before regexps, so a catch-all
    regexp does not take requests meant for a client registered by name. among
    several proxies the connection the session is bound to goes first */
-static int try_send_to_realm_clients(struct server *server, const char *realm,
+static int try_send_to_realm_clients(struct server *server, struct request *origin, const char *realm,
                                      struct radmsg *msg, struct reverse_coa_sent *sent) {
     struct reverse_coa_route *nas = NULL, *proxies[MAX_REVERSE_COA_FAILOVER], *route, *bound;
     struct reverse_coa_realm *r;
@@ -1291,13 +1297,13 @@ static int try_send_to_realm_clients(struct server *server, const char *realm,
 
     if (nas) {
         debug(DBG_DBG, "try_send_to_realm_clients: realm %s, the nas named in the request is registered", realm);
-        result = send_to_route(server, nas, msg, sent);
+        result = send_to_route(server, origin, nas, msg, sent);
     } else if (!nproxies)
         result = nases ? RAD_Err_NAS_Identification_Mismatch : RAD_Err_Request_Not_Routable;
     for (i = 0; i < nproxies; i++) {
         if (result && result != RAD_Err_NAS_Identification_Mismatch) {
             debug(DBG_DBG, "try_send_to_realm_clients: realm %s, trying a proxy", realm);
-            result = send_to_route(server, proxies[i], msg, sent);
+            result = send_to_route(server, origin, proxies[i], msg, sent);
         } else
             reverse_coa_route_deref(proxies[i]);
     }
@@ -1305,7 +1311,7 @@ static int try_send_to_realm_clients(struct server *server, const char *realm,
 }
 
 /* a client the request names by nas identity, for requests without operator-name */
-static int try_send_to_nas_client(struct server *server, struct radmsg *msg, struct reverse_coa_sent *sent) {
+static int try_send_to_nas_client(struct server *server, struct request *origin, struct radmsg *msg, struct reverse_coa_sent *sent) {
     struct reverse_coa_route *route = NULL, *candidate;
     struct list_node *node;
 
@@ -1323,36 +1329,37 @@ static int try_send_to_nas_client(struct server *server, struct radmsg *msg, str
     if (!route)
         return RAD_Err_Request_Not_Routable;
     debug(DBG_DBG, "try_send_to_nas_client: the nas named in the request is a client");
-    return send_to_route(server, route, msg, sent);
+    return send_to_route(server, origin, route, msg, sent);
 }
 
 /* by token, then the operator-name realm (rfc 8559 3.2), where the session binding
    orders the proxies; a request without operator-name is routed by nas identity.
    returns 0 when sent, else the Error-Cause for the nak */
-static int dispatch_reverse_coa(struct server *server, struct radmsg *msg, struct reverse_coa_sent *sent) {
+static int dispatch_reverse_coa(struct server *server, struct request *origin, struct radmsg *msg, struct reverse_coa_sent *sent) {
     char realm_buf[256];
     char *realm = extract_operator_realm(msg, realm_buf, sizeof(realm_buf));
     int result;
 
     sent->route = NULL;
     /* rfc 8559 3.4: operator-nas-identifier only counts next to operator-name */
-    if (realm && !try_send_to_token_client(server, msg, sent))
+    if (realm && !try_send_to_token_client(server, origin, msg, sent))
         return 0;
     if (realm) {
-        result = try_send_to_realm_clients(server, realm, msg, sent);
+        result = try_send_to_realm_clients(server, origin, realm, msg, sent);
 #ifdef RADPROT_UDP
-        if (result == RAD_Err_Request_Not_Routable)
-            result = try_send_to_udp_block(server, realm, msg, sent);
+        /* a request from a client never creates client entries */
+        if (result == RAD_Err_Request_Not_Routable && !origin)
+            result = try_send_to_udp_block(server, origin, realm, msg, sent);
 #endif
         if (result)
             debug_limit(DBG_INFO, "dispatch_reverse_coa: no route for %s (id %d) with operator-name realm %s, Error-Cause %d",
                         radmsgtype2string(msg->code), msg->id, realm, result);
         return result;
     }
-    result = try_send_to_nas_client(server, msg, sent);
+    result = try_send_to_nas_client(server, origin, msg, sent);
 #ifdef RADPROT_UDP
-    if (result == RAD_Err_Request_Not_Routable)
-        result = try_send_to_udp_block(server, NULL, msg, sent);
+    if (result == RAD_Err_Request_Not_Routable && !origin)
+        result = try_send_to_udp_block(server, origin, NULL, msg, sent);
 #endif
     if (result)
         debug_limit(DBG_INFO, "dispatch_reverse_coa: no route for %s (id %d) without operator-name, Error-Cause %d",
@@ -1360,7 +1367,7 @@ static int dispatch_reverse_coa(struct server *server, struct radmsg *msg, struc
     return result;
 }
 
-int _internal_dispatch_reverse_coa(struct server *server, struct radmsg *msg) { struct reverse_coa_sent sent; int result = dispatch_reverse_coa(server, msg, &sent); reverse_coa_route_deref(sent.route); return result; }
+int _internal_dispatch_reverse_coa(struct server *server, struct request *origin, struct radmsg *msg) { struct reverse_coa_sent sent; int result = dispatch_reverse_coa(server, origin, msg, &sent); reverse_coa_route_deref(sent.route); return result; }
 
 static void route_reverse_coa(struct server *server, struct radmsg *msg) {
     struct reverse_coa_sent sent;
@@ -1368,7 +1375,7 @@ static void route_reverse_coa(struct server *server, struct radmsg *msg) {
     int naklen = 0, result;
 
     record_coa_dedup(server, msg->id, msg->auth);
-    result = dispatch_reverse_coa(server, msg, &sent);
+    result = dispatch_reverse_coa(server, NULL, msg, &sent);
     if (!result) {
         record_coa_route(server, msg->id, msg->auth, &sent);
         radmsg_free(msg);
@@ -1380,6 +1387,22 @@ static void route_reverse_coa(struct server *server, struct radmsg *msg) {
         free(nakbuf);
     }
     radmsg_free(msg);
+}
+
+/* a request from a client with acceptCoA and reverseCoAFallback no coaServer took is
+   offered to the reverse coa routes; the response answers rq through
+   forward_coa_response(). returns 0 when sent, else the Error-Cause for the nak */
+int route_reverse_coa_from_client(struct request *rq) {
+    struct reverse_coa_sent sent;
+    char realm[256];
+    int result;
+
+    /* the realm limits where a client's request can go, so it is required */
+    if (!rq || !rq->msg || !rq->from || !extract_operator_realm(rq->msg, realm, sizeof(realm)))
+        return RAD_Err_Request_Not_Routable;
+    result = dispatch_reverse_coa(NULL, rq, rq->msg, &sent);
+    reverse_coa_route_deref(sent.route);
+    return result;
 }
 
 static void handle_reverse_coa_request(struct server *server, uint8_t *buf, int len) {
@@ -1416,10 +1439,12 @@ static void handle_reverse_coa_request(struct server *server, uint8_t *buf, int 
     route_reverse_coa(server, msg);
 }
 
-/* answers the request a reverse coa response belongs to, to the server it came
-   from. returns 1 if the response matched a pending request */
+/* answers the request a reverse coa response belongs to: the server it came from,
+   or the client whose request was routed down a reverse coa route. returns 1 if
+   the response matched a pending request */
 int forward_coa_response(struct client *from, struct radmsg *msg) {
     struct rqout *rqout;
+    struct request *origin;
     struct server *to_server;
     struct radmsg *reply;
     struct tlv *errorcause;
@@ -1431,8 +1456,8 @@ int forward_coa_response(struct client *from, struct radmsg *msg) {
     if (!from->reverse_coa_rqs)
         return 0;
 
-    /* the originating server is freed under this lock, see freeserver(); held
-       until the answer is on its way */
+    /* the originating server or client is freed under this lock, see freeserver()
+       and removeclientrq(); held until the answer is on its way */
     pthread_mutex_lock(removeclientrqs_sendrq_freeserver_lock());
     pthread_mutex_lock(&from->lock);
     expire_reverse_coa_rqs(from);
@@ -1453,6 +1478,8 @@ int forward_coa_response(struct client *from, struct radmsg *msg) {
               radmsgtype2string(msg->code), msg->id, from->conf->name, radmsgtype2string(sentcode));
         return 0;
     }
+    origin = rqout->rq->origin;
+    rqout->rq->origin = NULL;
     to_server = rqout->rq->to;
     origid = rqout->rq->rqid;
     memcpy(origauth, rqout->rq->rqauth, 16);
@@ -1473,9 +1500,25 @@ int forward_coa_response(struct client *from, struct radmsg *msg) {
             reply = NULL;
         }
     }
-    if (!reply)
+    if (!reply) {
         debug(DBG_ERR, "forward_coa_response: malloc failed");
-    else {
+        if (origin)
+            freerq(origin);
+    } else if (origin) {
+        if (!origin->from) {
+            debug(DBG_INFO, "forward_coa_response: client that sent request id %d is gone, dropping %s",
+                  origid, radmsgtype2string(msg->code));
+            radmsg_free(reply);
+            freerq(origin);
+        } else {
+            debug(DBG_INFO, "forward_coa_response: %s (id %d) from client %s answers request id %d from client %s",
+                  radmsgtype2string(msg->code), msg->id, from->conf->name, origid, origin->from->conf->name);
+            radmsg_free(origin->msg);
+            origin->msg = reply;
+            if (sendreply(origin) < 1)
+                debug(DBG_ERR, "forward_coa_response: answering request id %d failed", origid);
+        }
+    } else {
         radlen = radmsg2buf(reply, to_server->conf->secret, to_server->conf->secret_len, &buf);
         radmsg_free(reply);
         if (radlen <= 0)

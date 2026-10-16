@@ -160,6 +160,8 @@ client 127.0.0.1 {
 #	rewriteOut example
 #	Accept CoA/Disconnect-Request from this client
 #	acceptCoA on
+#	Offer CoA no coaServer takes to the reverse CoA routes
+#	reverseCoAFallback on
 #	Add Operator-NAS-Identifier so CoA for its sessions comes back here
 #	addOperatorNASIdentifier on
 }

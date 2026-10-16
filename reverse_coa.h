@@ -18,6 +18,7 @@ int try_handle_reverse_coa_request(struct server *server, unsigned char *buf, in
 void drain_coa_dedup(struct server *server);
 struct reverse_coa_route *reverse_coa_route_new(struct client *target);
 void reverse_coa_route_deref(struct reverse_coa_route *route);
+int route_reverse_coa_from_client(struct request *rq);
 int add_operator_nas_identifier(struct client *from, struct radmsg *msg);
 int reverse_coa_newtoken(char *token);
 int reverse_coa_token(const struct tlv *attr, char *token);
@@ -30,7 +31,7 @@ void sessionbind(struct client *client, struct radmsg *msg, struct radmsg *reply
 int sessionbindkey(struct radmsg *msg, struct radmsg *reply, uint8_t attr, char *buf, size_t bufsize);
 
 /* for the tests */
-int _internal_dispatch_reverse_coa(struct server *server, struct radmsg *msg);
+int _internal_dispatch_reverse_coa(struct server *server, struct request *origin, struct radmsg *msg);
 int _internal_is_coa_duplicate(struct server *server, struct radmsg *msg);
 void _internal_record_coa_dedup(struct server *server, uint8_t id, uint8_t *auth);
 int _internal_match_nas_identifier(struct client *client, struct radmsg *msg);
