@@ -136,6 +136,7 @@ struct request {
     uint8_t newid;
     int udpsock;                          /* only for UDP */
     struct sockaddr_storage *to_override; /* reverse coa to a udp client, else NULL */
+    struct request *origin;               /* client request a reverse coa response answers */
 };
 
 /* requests that our client will send */
@@ -211,6 +212,7 @@ struct clsrvconf {
     uint16_t coaport; /* reverse coa destination port for udp clients, default 3799 */
     uint8_t accept_coa;
     uint8_t add_operator_nas_id;
+    uint8_t reverse_coa_fallback;
     char token[REVERSE_COA_TOKEN_LEN + 1]; /* udp clients share one token per block, see addclient() */
 };
 

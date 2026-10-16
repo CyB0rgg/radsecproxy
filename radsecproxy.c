@@ -508,6 +508,8 @@ void freerq(struct request *rq) {
         radmsg_free(rq->msg);
     if (rq->to_override)
         free(rq->to_override);
+    if (rq->origin)
+        freerq(rq->origin);
     pthread_mutex_destroy(&rq->refmutex);
     free(rq);
 }
@@ -1484,8 +1486,15 @@ int radsrv(struct request *rq) {
 
         to = findcoaserver(realms, &realm, msg, &nasmismatch);
         if (!to) {
-            int errorcause = nasmismatch ? RAD_Err_NAS_Identification_Mismatch : RAD_Err_Request_Not_Routable;
-
+            /* no coaServer takes it, the reverse coa routes only if the client may use them */
+            int errorcause = nasmismatch ? RAD_Err_NAS_Identification_Mismatch
+                             : from->conf->reverse_coa_fallback ? route_reverse_coa_from_client(rq)
+                                                                : RAD_Err_Request_Not_Routable;
+            if (!errorcause) {
+                debug(DBG_INFO, "radsrv: %s (id %d) from %s (%s) sent down a reverse coa route",
+                      radmsgtype2string(msg->code), msg->id, from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
+                goto exit;
+            }
             debug_limit(DBG_INFO, "radsrv: no route for %s (id %d) from %s (%s), Error-Cause %d",
                         radmsgtype2string(msg->code), msg->id, from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)), errorcause);
             respond(rq, coa_nak_code(msg->code), make_error_cause_tlv(errorcause), 1);
@@ -3035,6 +3044,7 @@ int confclient_cb(struct gconffile **cf, void *arg, char *block, char *opt, char
             "ProtocolError", CONF_BLN, &conf->protocolerror,
             "acceptCoA", CONF_BLN, &conf->accept_coa,
             "addOperatorNASIdentifier", CONF_BLN, &conf->add_operator_nas_id,
+            "reverseCoAFallback", CONF_BLN, &conf->reverse_coa_fallback,
             NULL))
         debugx(1, DBG_ERR, "configuration error");
 

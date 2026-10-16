@@ -8,6 +8,7 @@ unreleased changes
 	- Operator-NAS-Identifier for reverse CoA routing
 	- Reach idle udp clients for reverse CoA from their client block
 	- Session binding for reverse CoA routing
+	- Optional fallback of client CoA to the reverse CoA routes (reverseCoAFallback)
 
 	Misc:
 	- Prevent TLS connections to self

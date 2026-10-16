@@ -178,7 +178,7 @@ static struct radmsg *session(uint8_t code, uint8_t id, char *opname, uint8_t at
 
 /* routes msg from server and frees it */
 static int dispatch(struct server *server, struct radmsg *msg) {
-    int result = _internal_dispatch_reverse_coa(server, msg);
+    int result = _internal_dispatch_reverse_coa(server, NULL, msg);
 
     radmsg_free(msg);
     return result;
@@ -458,7 +458,7 @@ int main(int argc, char *argv[]) {
 
     /* dispatch */
     {
-        struct request *rq;
+        struct request *rq, *origin;
         struct radmsg *msg, *bind, *accept, *sent;
         uint8_t v4[4] = {192, 0, 2, 10};
 
@@ -569,6 +569,20 @@ int main(int argc, char *argv[]) {
             freeclient(p2);
             freeclient(p1);
         }
+
+        /* never back to the sender */
+        origin = newrequest();
+        origin->from = nas;
+        origin->msg = request(RAD_CoA_Request, 18, "1example.com", "nas-1");
+        test_eq(RAD_Err_Request_Not_Routable, route_reverse_coa_from_client(origin), "not back to the sender");
+        test_ok(!queued(nas), "nothing queued for the sender");
+        freerq(origin);
+        origin = newrequest();
+        origin->from = proxy;
+        origin->msg = request(RAD_CoA_Request, 19, NULL, "nas-1");
+        test_eq(RAD_Err_Request_Not_Routable, route_reverse_coa_from_client(origin), "client request without operator-name 502");
+        test_ok(!queued(nas), "nothing queued without operator-name");
+        freerq(origin);
     }
 
     /* session table */
@@ -663,7 +677,7 @@ int main(int argc, char *argv[]) {
     /* response pairing */
     {
         struct radmsg *msg = request(RAD_Disconnect_Request, 30, "1example.com", "nas-1"), *resp, *back;
-        struct request *rq;
+        struct request *rq, *origin;
         uint8_t auth[16], id;
 
         memcpy(auth, msg->auth, 16);
@@ -680,6 +694,23 @@ int main(int argc, char *argv[]) {
         test_ok(back && back->code == RAD_Disconnect_ACK && back->id == 30 && back->authstate == RSP_RADMSG_MSGAUTH_VALID, "relayed under the original id");
         test_ok(!forward_coa_response(nas, resp), "nothing pending for the id");
         radmsg_free(back);
+        radmsg_free(resp);
+
+        /* a request from a client is answered by the response */
+        origin = newrequest();
+        origin->from = proxy;
+        origin->msg = request(RAD_Disconnect_Request, 31, "1example.com", "nas-1");
+        test_eq(0, route_reverse_coa_from_client(origin), "client request routed");
+        rq = queued(nas);
+        id = rq ? rq->newid : 0;
+        test_ok(rq && rq->origin == origin, "origin kept");
+        freerq(rq);
+        resp = radmsg_init(RAD_Disconnect_ACK, id, NULL);
+        test_ok(forward_coa_response(nas, resp), "answered");
+        rq = queued(proxy);
+        test_ok(rq == origin && rq->replybuf[0] == RAD_Disconnect_ACK && rq->replybuf[1] == 31, "client request answered");
+        freerq(rq);
+        freerq(origin);
         radmsg_free(resp);
     }
 

@@ -363,9 +363,10 @@ Requests from clients are handled in coa.c, from servers in reverse_coa.c.
 A CoA/Disconnect-Request from a client goes through radsrv() like any
 request, given acceptCoA and a fresh Event-Timestamp. findcoaserver()
 picks a coaServer of the Operator-Name realm, preferring one whose
-NASidentifier or host the request names. With no coaServer the client
-gets a NAK with Error-Cause 502, or 403 when the realm names NASes and
-none of them matches.
+NASidentifier or host the request names. If none takes it and the
+client has reverseCoAFallback, route_reverse_coa_from_client() tries the
+routes below for a request with Operator-Name, without the udp block
+reach.
 
 A CoA/Disconnect-Request from a server is taken by
 try_handle_reverse_coa_request() in the client reader, before replyh().
@@ -389,7 +390,7 @@ With no route the originator gets a NAK with Error-Cause 502, 403 or 506.
 The response comes in at the server reader. radsrv() gets the sent
 authenticator from lookup_reverse_coa_rqauth() so buf2radmsg() can
 verify it, and forward_coa_response() re-signs it for the originating
-server (clientradput). A udp
+server (clientradput) or client (sendreply on rq->origin). A udp
 response comes from the CoA port, so radudpget() falls back to
 findreversecoaclient().
 
@@ -421,4 +422,5 @@ client teardown take. The binding table has its own lock.
 A udp client entry with a request pending is never swept. A request not
 answered within reverseCoATimeout is dropped with a notice and the
 originator hears nothing; a retransmission of a request still in flight
-is sent again to a udp or dtls client, a cached answer is replayed.
+is sent again to a udp or dtls client, a cached answer is replayed. A
+request is never sent back to the client it came from.
