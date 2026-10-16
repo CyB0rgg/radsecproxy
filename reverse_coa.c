@@ -12,6 +12,7 @@
 #include "util.h"
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <openssl/rand.h>
 #include <pthread.h>
 #include <regex.h>
 #include <stdio.h>
@@ -86,6 +87,18 @@ void init_reverse_coa(void) {
     reverse_coa_nas_routes = list_create();
     if (!reverse_coa_realm_list || !reverse_coa_nas_routes)
         debugx(1, DBG_ERR, "malloc failed");
+}
+
+/* the token naming a client connection in Operator-NAS-Identifier, see addclient() */
+int reverse_coa_newtoken(char *token) {
+    uint8_t r[REVERSE_COA_TOKEN_LEN / 2];
+    int i;
+
+    if (!RAND_bytes(r, sizeof(r)))
+        return 0;
+    for (i = 0; i < (int)sizeof(r); i++)
+        sprintf(token + 2 * i, "%02x", r[i]);
+    return 1;
 }
 
 /* a value in slashes is a regexp, anything else is matched literally, as in addrealm() */
@@ -480,6 +493,32 @@ static int match_nas_identifier(struct client *client, struct radmsg *msg) {
 
 int _internal_match_nas_identifier(struct client *client, struct radmsg *msg) { return match_nas_identifier(client, msg); }
 
+/* the token from Operator-NAS-Identifier, if the attribute has the right shape */
+int reverse_coa_token(const struct tlv *attr, char *token) {
+    if (!attr || attr->t != RAD_ExtAttr_Operator_NAS_Identifier.t || attr->l != REVERSE_COA_TOKEN_LEN + 1 ||
+        attr->v[0] != RAD_ExtAttr_Operator_NAS_Identifier.s)
+        return 0;
+    memcpy(token, attr->v + 1, REVERSE_COA_TOKEN_LEN);
+    token[REVERSE_COA_TOKEN_LEN] = '\0';
+    return 1;
+}
+
+/* rfc 8559 3.4: access and accounting requests only, once, only with operator-name */
+int add_operator_nas_identifier(struct client *from, struct radmsg *msg) {
+    struct tlv *attr;
+
+    if (!radmsg_gettype(msg, RAD_Attr_Operator_Name) || radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier))
+        return 1;
+    attr = makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, REVERSE_COA_TOKEN_LEN, from->token);
+    if (!attr || !radmsg_add(msg, attr, 0)) {
+        freetlv(attr);
+        return 0;
+    }
+    debug(DBG_DBG, "add_operator_nas_identifier: added %s to %s (id %d) from client %s", from->token,
+          radmsgtype2string(msg->code), msg->id, from->conf->name);
+    return 1;
+}
+
 /* rfc 8559 4.2: removed before the packet reaches the nas */
 void strip_operator_attrs(struct radmsg *msg) {
     struct list_node *n, *p = NULL;
@@ -729,6 +768,63 @@ static int send_to_route(struct server *server, struct reverse_coa_route *route,
     return result;
 }
 
+/* the nas address named in the request: NAS-IP-Address or NAS-IPv6-Address, port 0 */
+int reverse_coa_nas_addr(struct radmsg *msg, struct sockaddr_storage *out) {
+    struct tlv *attr;
+    struct sockaddr_in *sin;
+    struct sockaddr_in6 *sin6;
+
+    memset(out, 0, sizeof(*out));
+    attr = radmsg_gettype(msg, RAD_Attr_NAS_IP_Address);
+    if (attr && attr->l == 4) {
+        sin = (struct sockaddr_in *)out;
+        sin->sin_family = AF_INET;
+        memcpy(&sin->sin_addr, attr->v, 4);
+        return 1;
+    }
+    attr = radmsg_gettype(msg, RAD_Attr_NAS_IPv6_Address);
+    if (attr && attr->l == 16) {
+        sin6 = (struct sockaddr_in6 *)out;
+        sin6->sin6_family = AF_INET6;
+        memcpy(&sin6->sin6_addr, attr->v, 16);
+        return 1;
+    }
+    return 0;
+}
+
+/* the connection named by the token we added on the way out; a udp token names the
+   client block, the nas address picks the entry */
+static int try_send_to_token_client(struct server *server, struct radmsg *msg, struct reverse_coa_sent *sent) {
+    struct reverse_coa_route *route = NULL, *candidate;
+    struct list_node *node;
+    struct sockaddr_storage addr;
+    char token[REVERSE_COA_TOKEN_LEN + 1];
+    int has_addr;
+
+    if (!reverse_coa_token(radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier), token))
+        return RAD_Err_Request_Not_Routable;
+    has_addr = reverse_coa_nas_addr(msg, &addr);
+
+    pthread_mutex_lock(&realm_reverse_coa_lock);
+    for (node = list_first(reverse_coa_nas_routes); node && !route; node = list_next(node)) {
+        candidate = (struct reverse_coa_route *)node->data;
+        pthread_mutex_lock(&candidate->refmutex);
+        if (candidate->target && !strcmp(candidate->target->token, token) &&
+            (candidate->target->conf->type != RAD_UDP || !has_addr || addr_equal_ip(candidate->target->addr, (struct sockaddr *)&addr)))
+            route = candidate;
+        pthread_mutex_unlock(&candidate->refmutex);
+    }
+    if (route)
+        reverse_coa_route_ref(route);
+    pthread_mutex_unlock(&realm_reverse_coa_lock);
+    if (route) {
+        debug(DBG_DBG, "try_send_to_token_client: operator-nas-identifier names a client connection");
+        return send_to_route(server, route, msg, sent);
+    }
+    debug(DBG_INFO, "try_send_to_token_client: the connection named by operator-nas-identifier is gone");
+    return RAD_Err_Request_Not_Routable;
+}
+
 /* the clients registered for the operator-name realm: the nas named in the request
    if one of them is it, else a proxy; rfc 8559 3.3 when only nases are registered
    and none is named. literal realm values are tried before regexps, so a catch-all
@@ -805,14 +901,18 @@ static int try_send_to_nas_client(struct server *server, struct radmsg *msg, str
     return send_to_route(server, route, msg, sent);
 }
 
-/* by the operator-name realm (rfc 8559 3.2); a request without operator-name is
-   routed by nas identity. returns 0 when sent, else the Error-Cause for the nak */
+/* by token, then the operator-name realm (rfc 8559 3.2); a request without
+   operator-name is routed by nas identity. returns 0 when sent, else the
+   Error-Cause for the nak */
 static int dispatch_reverse_coa(struct server *server, struct radmsg *msg, struct reverse_coa_sent *sent) {
     char realm_buf[256];
     char *realm = extract_operator_realm(msg, realm_buf, sizeof(realm_buf));
     int result;
 
     sent->route = NULL;
+    /* rfc 8559 3.4: operator-nas-identifier only counts next to operator-name */
+    if (realm && !try_send_to_token_client(server, msg, sent))
+        return 0;
     if (realm) {
         result = try_send_to_realm_clients(server, realm, msg, sent);
         if (result)

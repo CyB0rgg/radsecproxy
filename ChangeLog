@@ -5,6 +5,7 @@ unreleased changes
 	- Global option to require Message-Authenticator on all clients and servers
 	- Reverse CoA: route CoA/Disconnect-Request from a server down to the client (#186)
 	- CoA/Disconnect-Request proxying by Operator-Name to coaServer blocks (#206)
+	- Operator-NAS-Identifier for reverse CoA routing
 
 	Misc:
 	- Prevent TLS connections to self

@@ -223,6 +223,13 @@ struct client *addclient(struct clsrvconf *conf, int sock,
 
     new->conf = conf;
     new->sock = sock;
+    /* udp entries come and go with source ports, so they share the block's token */
+    if (conf->type == RAD_UDP) {
+        if (!conf->token[0] && !reverse_coa_newtoken(conf->token))
+            goto out_undo_list;
+        memcpy(new->token, conf->token, sizeof(new->token));
+    } else if (!reverse_coa_newtoken(new->token))
+        goto out_undo_list;
     /* addr must be set before the client is registered for reverse coa */
     if (from) {
         new->addr = addr_copy((struct sockaddr *)from);
@@ -237,7 +244,7 @@ struct client *addclient(struct clsrvconf *conf, int sock,
     else
         new->replyq = newqueue();
     pthread_mutex_init(&new->lock, NULL);
-    if (conf->reverse_coa_realms || conf->nas_identifier) {
+    if (conf->reverse_coa_realms || conf->nas_identifier || conf->add_operator_nas_id) {
         new->reverse_coa_route = reverse_coa_route_new(new);
         if (!new->reverse_coa_route) {
             debug(DBG_ERR, "malloc failed");
@@ -1598,6 +1605,12 @@ int radsrv(struct request *rq) {
             debug(DBG_WARN, "radsrv: rewrite malloc failed, ignoring request");
             goto rmclrqexit;
         }
+    }
+
+    if (from->conf->add_operator_nas_id && (msg->code == RAD_Access_Request || msg->code == RAD_Accounting_Request) &&
+        !add_operator_nas_identifier(from, msg)) {
+        debug(DBG_WARN, "radsrv: adding operator-nas-identifier failed, ignoring request");
+        goto rmclrqexit;
     }
 
     if ((msg->code == RAD_Access_Request || IS_COA_REQUEST(msg->code)) &&
@@ -3017,6 +3030,7 @@ int confclient_cb(struct gconffile **cf, void *arg, char *block, char *opt, char
             "requireMessageAuthenticatorProxy", CONF_BLN, &conf->reqmsgauthproxy,
             "ProtocolError", CONF_BLN, &conf->protocolerror,
             "acceptCoA", CONF_BLN, &conf->accept_coa,
+            "addOperatorNASIdentifier", CONF_BLN, &conf->add_operator_nas_id,
             NULL))
         debugx(1, DBG_ERR, "configuration error");
 
