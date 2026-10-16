@@ -132,11 +132,11 @@ static void test_extract_operator_realm(void) {
         char *first, *second, *expect, *descr;
     } cases[] = {
         {NULL, NULL, NULL, "no operator-name"},
-        {"0visited.example", NULL, NULL, "namespace 0 is no realm"},
-        {"4IRONWIFI:US", NULL, NULL, "namespace 4 is no realm"},
+        {"0visited.example", NULL, "0visited.example", "namespace 0 whole value"},
+        {"4IRONWIFI:US", NULL, "4IRONWIFI:US", "namespace 4 whole value"},
         {"1", NULL, NULL, "namespace byte only"},
         {"1visited.example", NULL, "visited.example", "namespace 1 realm"},
-        {"0some-other-format", "1second.example", "second.example", "realm instance after another namespace"},
+        {"0some-other-format", "1second.example", "0some-other-format", "first instance wins"},
         {"1", "1second.example", "second.example", "empty instance skipped"},
     };
     char buf[256], small[6];

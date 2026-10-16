@@ -954,9 +954,10 @@ Accounting-Request messages when a realm has no accountingServer configured.
 
 .SS "COA/DISCONNECT ROUTING"
 CoA-Request and Disconnect-Request (RFC 5176) are routed by Operator-Name (RFC 8559
-section 3.2), never by User-Name. The realm is the text after namespace byte 1,
-example.com for 1example.com, matched against the realm block names like a User-Name
-realm. A request without such an Operator-Name is answered with Error-Cause 502.
+section 3.2), never by User-Name. For namespace 1 the realm is the text after the
+namespace byte, example.com for 1example.com; for other namespaces it is the whole
+value, such as 4EXAMPLE:XX, matched against the realm block names like a User-Name realm.
+A request without Operator-Name is answered with Error-Cause 502.
 
 A request from a client with \fBAcceptCoA\fR goes to a \fBcoaServer\fR of the realm,
 preferring one whose \fBNASidentifier\fR or \fBHost\fR the request names. When the realm
