@@ -1,0 +1,35 @@
+/* Copyright (c) 2026, Nova Labs */
+/* Copyright (c) 2026, CyB0rgg */
+/* See LICENSE for licensing information. */
+
+#ifndef _REVERSE_COA_H
+#define _REVERSE_COA_H
+
+#include "radsecproxy.h"
+
+void init_reverse_coa(void);
+void register_reverse_coa_client(struct client *client);
+void unregister_reverse_coa_client(struct client *client);
+int forward_coa_response(struct client *from, struct radmsg *msg);
+void invalidate_reverse_coa_rqs_for_server(struct server *server, struct list *clconfs);
+void free_reverse_coa_rqs(struct client *client);
+int lookup_reverse_coa_rqauth(struct client *from, uint8_t *buf, int buflen, uint8_t *out_auth);
+int try_handle_reverse_coa_request(struct server *server, unsigned char *buf, int len);
+void drain_coa_dedup(struct server *server);
+struct reverse_coa_route *reverse_coa_route_new(struct client *target);
+void reverse_coa_route_deref(struct reverse_coa_route *route);
+void strip_operator_attrs(struct radmsg *msg);
+int client_has_pending_reverse_coa(struct client *client);
+
+/* for the tests */
+int _internal_dispatch_reverse_coa(struct server *server, struct radmsg *msg);
+int _internal_is_coa_duplicate(struct server *server, struct radmsg *msg);
+void _internal_record_coa_dedup(struct server *server, uint8_t id, uint8_t *auth);
+int _internal_match_nas_identifier(struct client *client, struct radmsg *msg);
+struct client *_internal_reverse_coa_route_target(struct reverse_coa_route *route);
+
+#endif /* _REVERSE_COA_H */
+
+/* Local Variables: */
+/* c-file-style: "stroustrup" */
+/* End: */

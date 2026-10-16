@@ -1,0 +1,1040 @@
+/* Copyright (c) 2026, Nova Labs */
+/* Copyright (c) 2026, CyB0rgg */
+/* See LICENSE for licensing information. */
+
+#include "reverse_coa.h"
+
+#include "coa.h"
+#include "debug.h"
+#include "list.h"
+#include "radmsg.h"
+#include "udp.h"
+#include "util.h"
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <regex.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/time.h>
+#include <time.h>
+
+/* rfc 5176 6.3: the same window for duplicate detection and event-timestamp */
+#define REVERSE_COA_DEDUP_WINDOW 300
+#define MAX_REVERSE_COA_FAILOVER 8
+
+/* the clients registered for one ReverseCoAOperatorRealm value */
+struct reverse_coa_realm {
+    char *value;
+    regex_t regex;
+    struct list *routes;
+};
+
+struct reverse_coa_route {
+    uint32_t refcount;
+    pthread_mutex_t refmutex;
+    struct client *target;
+};
+
+/* where a request went, kept with the duplicate detection slot for retransmissions */
+struct reverse_coa_sent {
+    struct reverse_coa_route *route;
+    uint8_t id;
+};
+
+struct reverse_coa_route *reverse_coa_route_new(struct client *target) {
+    struct reverse_coa_route *route = malloc(sizeof(*route));
+    if (!route)
+        return NULL;
+    route->refcount = 1;
+    pthread_mutex_init(&route->refmutex, NULL);
+    route->target = target;
+    return route;
+}
+
+static void reverse_coa_route_ref(struct reverse_coa_route *route) {
+    if (!route)
+        return;
+    pthread_mutex_lock(&route->refmutex);
+    route->refcount++;
+    pthread_mutex_unlock(&route->refmutex);
+}
+
+void reverse_coa_route_deref(struct reverse_coa_route *route) {
+    uint32_t remaining;
+
+    if (!route)
+        return;
+    pthread_mutex_lock(&route->refmutex);
+    remaining = --route->refcount;
+    pthread_mutex_unlock(&route->refmutex);
+    if (remaining == 0) {
+        pthread_mutex_destroy(&route->refmutex);
+        free(route);
+    }
+}
+
+struct client *_internal_reverse_coa_route_target(struct reverse_coa_route *route) { return route->target; }
+
+static struct list *reverse_coa_realm_list;
+static struct list *reverse_coa_nas_routes;
+static pthread_mutex_t realm_reverse_coa_lock = PTHREAD_MUTEX_INITIALIZER;
+
+void init_reverse_coa(void) {
+    reverse_coa_realm_list = list_create();
+    reverse_coa_nas_routes = list_create();
+    if (!reverse_coa_realm_list || !reverse_coa_nas_routes)
+        debugx(1, DBG_ERR, "malloc failed");
+}
+
+/* a value in slashes is a regexp, anything else is matched literally, as in addrealm() */
+static int reverse_coa_realm_regcomp(const char *value, regex_t *re) {
+    char *regex, *s;
+    int n, rc;
+
+    regex = malloc(2 * strlen(value) + 3);
+    if (!regex)
+        return 0;
+    if (*value == '/') {
+        strcpy(regex, value + 1);
+        if (*regex && regex[strlen(regex) - 1] == '/')
+            regex[strlen(regex) - 1] = '\0';
+    } else {
+        regex[0] = '^';
+        for (n = 1, s = (char *)value; *s; s++) {
+            if (*s == '.')
+                regex[n++] = '\\';
+            regex[n++] = *s;
+        }
+        regex[n++] = '$';
+        regex[n] = '\0';
+    }
+    rc = regcomp(re, regex, REG_EXTENDED | REG_ICASE | REG_NOSUB);
+    free(regex);
+    return !rc;
+}
+
+static struct reverse_coa_realm *reverse_coa_realm_new(const char *value) {
+    struct reverse_coa_realm *r = malloc(sizeof(struct reverse_coa_realm));
+
+    if (!r) {
+        debug(DBG_ERR, "reverse_coa_realm_new: malloc failed");
+        return NULL;
+    }
+    r->value = stringcopy(value, 0);
+    r->routes = list_create();
+    if (r->value && r->routes && reverse_coa_realm_regcomp(value, &r->regex))
+        return r;
+    debug(DBG_ERR, "reverse_coa_realm_new: failed to add ReverseCoAOperatorRealm %s", value);
+    free(r->value);
+    list_destroy(r->routes);
+    free(r);
+    return NULL;
+}
+
+static void reverse_coa_realm_free(struct reverse_coa_realm *r) {
+    regfree(&r->regex);
+    free(r->value);
+    list_destroy(r->routes);
+    free(r);
+}
+
+/* realm_reverse_coa_lock held */
+static struct reverse_coa_realm *reverse_coa_realm_find(const char *value) {
+    struct list_node *node;
+    struct reverse_coa_realm *r;
+
+    for (node = list_first(reverse_coa_realm_list); node; node = list_next(node)) {
+        r = (struct reverse_coa_realm *)node->data;
+        if (!strcmp(r->value, value))
+            return r;
+    }
+    return NULL;
+}
+
+void register_reverse_coa_client(struct client *client) {
+    struct reverse_coa_route *route;
+    struct reverse_coa_realm *r;
+    int i;
+
+    if (!client || !client->conf || !client->reverse_coa_route)
+        return;
+    route = client->reverse_coa_route;
+
+    pthread_mutex_lock(&realm_reverse_coa_lock);
+    reverse_coa_route_ref(route);
+    if (!list_push(reverse_coa_nas_routes, route)) {
+        reverse_coa_route_deref(route);
+        debug(DBG_ERR, "register_reverse_coa_client: malloc failed");
+    }
+    for (i = 0; client->conf->reverse_coa_realms && client->conf->reverse_coa_realms[i]; i++) {
+        r = reverse_coa_realm_find(client->conf->reverse_coa_realms[i]);
+        if (!r) {
+            r = reverse_coa_realm_new(client->conf->reverse_coa_realms[i]);
+            if (!r)
+                continue;
+            if (!list_push(reverse_coa_realm_list, r)) {
+                debug(DBG_ERR, "register_reverse_coa_client: malloc failed");
+                reverse_coa_realm_free(r);
+                continue;
+            }
+        }
+        reverse_coa_route_ref(route);
+        if (!list_push(r->routes, route)) {
+            reverse_coa_route_deref(route);
+            debug(DBG_ERR, "register_reverse_coa_client: malloc failed");
+        } else
+            debug(DBG_DBG, "register_reverse_coa_client: client %s registered for realm %s", client->conf->name, r->value);
+    }
+    pthread_mutex_unlock(&realm_reverse_coa_lock);
+}
+
+/* realm_reverse_coa_lock held; returns the number of references dropped */
+static int reverse_coa_route_remove(struct list *routes, struct reverse_coa_route *route) {
+    int n = 0;
+
+    while (list_count(routes) > 0) {
+        uint32_t before = list_count(routes);
+        list_removedata(routes, route);
+        if (list_count(routes) == before)
+            break;
+        reverse_coa_route_deref(route);
+        n++;
+    }
+    return n;
+}
+
+void unregister_reverse_coa_client(struct client *client) {
+    struct reverse_coa_route *route;
+    struct reverse_coa_realm *r;
+    int i;
+
+    if (!client || !client->conf || !client->reverse_coa_route)
+        return;
+    route = client->reverse_coa_route;
+
+    pthread_mutex_lock(&realm_reverse_coa_lock);
+    reverse_coa_route_remove(reverse_coa_nas_routes, route);
+    for (i = 0; client->conf->reverse_coa_realms && client->conf->reverse_coa_realms[i]; i++) {
+        r = reverse_coa_realm_find(client->conf->reverse_coa_realms[i]);
+        if (!r)
+            continue;
+        if (reverse_coa_route_remove(r->routes, route))
+            debug(DBG_DBG, "unregister_reverse_coa_client: client %s unregistered from realm %s", client->conf->name, r->value);
+        if (list_count(r->routes) == 0) {
+            list_removedata(reverse_coa_realm_list, r);
+            reverse_coa_realm_free(r);
+        }
+    }
+    pthread_mutex_unlock(&realm_reverse_coa_lock);
+
+    /* waits for a send in progress to the client, see send_coa_to_client() */
+    pthread_mutex_lock(&route->refmutex);
+    route->target = NULL;
+    pthread_mutex_unlock(&route->refmutex);
+}
+
+static void expire_reverse_coa_rqs(struct client *client);
+
+/* client->lock held */
+static void clear_rqout(struct client *client, struct rqout *rqout) {
+    if (rqout->rq) {
+        freerq(rqout->rq);
+        client->reverse_coa_pending--;
+    }
+    rqout->rq = NULL;
+    memset(&rqout->expiry, 0, sizeof(struct timeval));
+}
+
+/* a udp client entry with a reverse coa in flight must outlive the expiry sweep */
+int client_has_pending_reverse_coa(struct client *client) {
+    int pending;
+
+    if (!client || !client->reverse_coa_rqs)
+        return 0;
+    pthread_mutex_lock(&client->lock);
+    expire_reverse_coa_rqs(client);
+    pending = client->reverse_coa_pending > 0;
+    pthread_mutex_unlock(&client->lock);
+    return pending;
+}
+
+void free_reverse_coa_rqs(struct client *client) {
+    int i;
+
+    if (!client->reverse_coa_rqs)
+        return;
+    for (i = 0; i < MAX_REQUESTS; i++)
+        clear_rqout(client, &client->reverse_coa_rqs[i]);
+    free(client->reverse_coa_rqs);
+    client->reverse_coa_rqs = NULL;
+}
+
+/* server->reverse_coa_lock held */
+static void clear_dedup_slot(struct coa_dedup_slot *slot) {
+    free(slot->replybuf);
+    reverse_coa_route_deref(slot->route);
+    memset(slot, 0, sizeof(*slot));
+}
+
+static int slot_expired(const struct coa_dedup_slot *slot, time_t now) {
+    return now >= slot->received + REVERSE_COA_DEDUP_WINDOW;
+}
+
+/* a retransmission of a request still in flight to a udp or dtls client is sent
+   again, rfc 5176 2.3; on a tls or tcp connection the transport does that */
+static void resend_reverse_coa(struct server *server, struct reverse_coa_route *route, uint8_t id, struct radmsg *msg) {
+    struct client *client;
+    struct rqout *rqout;
+    struct request *rq = NULL;
+
+    pthread_mutex_lock(&route->refmutex);
+    client = route->target;
+    if (client && (client->conf->type == RAD_UDP || client->conf->type == RAD_DTLS)) {
+        pthread_mutex_lock(&client->lock);
+        rqout = client->reverse_coa_rqs ? &client->reverse_coa_rqs[id] : NULL;
+        if (rqout && rqout->rq && rqout->rq->rqid == msg->id && !memcmp(rqout->rq->rqauth, msg->auth, 16))
+            rq = newrqref(rqout->rq);
+        pthread_mutex_unlock(&client->lock);
+        if (rq) {
+            debug(DBG_INFO, "resend_reverse_coa: %s (id %d) from server %s sent again to client %s",
+                  radmsgtype2string(msg->code), msg->id, server->conf->name, client->conf->name);
+            if (sendreply(rq) < 1)
+                debug(DBG_ERR, "resend_reverse_coa: sending to client %s failed", client->conf->name);
+        }
+    }
+    pthread_mutex_unlock(&route->refmutex);
+}
+
+static int is_coa_duplicate(struct server *server, struct radmsg *msg) {
+    struct coa_dedup_slot *slot;
+    struct reverse_coa_route *route = NULL;
+    time_t now;
+    uint8_t *replybuf = NULL;
+    uint8_t id = 0;
+    int replybuflen = 0;
+
+    pthread_mutex_lock(&server->reverse_coa_lock);
+    slot = &server->reverse_coa_seen[msg->id];
+    if (!slot->occupied) {
+        pthread_mutex_unlock(&server->reverse_coa_lock);
+        return 0;
+    }
+    time(&now);
+    if (slot_expired(slot, now)) {
+        clear_dedup_slot(slot);
+        pthread_mutex_unlock(&server->reverse_coa_lock);
+        return 0;
+    }
+    if (memcmp(slot->auth, msg->auth, 16) != 0) {
+        /* new request reusing the id, not a retransmission */
+        pthread_mutex_unlock(&server->reverse_coa_lock);
+        return 0;
+    }
+    if (slot->replybuf && slot->replybuflen > 0) {
+        replybuf = malloc(slot->replybuflen);
+        if (replybuf) {
+            memcpy(replybuf, slot->replybuf, slot->replybuflen);
+            replybuflen = slot->replybuflen;
+        } else
+            debug(DBG_ERR, "is_coa_duplicate: malloc failed");
+    } else if (slot->route) {
+        route = slot->route;
+        id = slot->id;
+        reverse_coa_route_ref(route);
+    }
+    pthread_mutex_unlock(&server->reverse_coa_lock);
+
+    if (replybuf) {
+        debug(DBG_INFO, "is_coa_duplicate: resending cached response for id %d to server %s",
+              msg->id, server->conf->name);
+        server->conf->pdef->clientradput(server, replybuf, replybuflen);
+        free(replybuf);
+    } else if (route) {
+        resend_reverse_coa(server, route, id, msg);
+        reverse_coa_route_deref(route);
+    } else
+        debug(DBG_DBG, "is_coa_duplicate: retransmission of id %d from server %s, response pending",
+              msg->id, server->conf->name);
+    return 1;
+}
+
+int _internal_is_coa_duplicate(struct server *server, struct radmsg *msg) { return is_coa_duplicate(server, msg); }
+
+static void expire_coa_dedup_entries(struct server *server) {
+    time_t now;
+    int i;
+
+    time(&now);
+    pthread_mutex_lock(&server->reverse_coa_lock);
+    if (now >= server->last_dedup_cleanup + REVERSE_COA_DEDUP_WINDOW) {
+        for (i = 0; i < MAX_REQUESTS; i++)
+            if (server->reverse_coa_seen[i].occupied && slot_expired(&server->reverse_coa_seen[i], now))
+                clear_dedup_slot(&server->reverse_coa_seen[i]);
+        server->last_dedup_cleanup = now;
+    }
+    pthread_mutex_unlock(&server->reverse_coa_lock);
+}
+
+static void record_coa_dedup(struct server *server, uint8_t id, uint8_t *auth) {
+    struct coa_dedup_slot *slot;
+
+    pthread_mutex_lock(&server->reverse_coa_lock);
+    slot = &server->reverse_coa_seen[id];
+    clear_dedup_slot(slot);
+    memcpy(slot->auth, auth, 16);
+    time(&slot->received);
+    slot->occupied = 1;
+    pthread_mutex_unlock(&server->reverse_coa_lock);
+}
+
+void _internal_record_coa_dedup(struct server *server, uint8_t id, uint8_t *auth) { record_coa_dedup(server, id, auth); }
+
+/* takes over the reference held in sent */
+static void record_coa_route(struct server *server, uint8_t id, uint8_t *auth, struct reverse_coa_sent *sent) {
+    struct coa_dedup_slot *slot;
+
+    pthread_mutex_lock(&server->reverse_coa_lock);
+    slot = &server->reverse_coa_seen[id];
+    if (slot->occupied && !memcmp(slot->auth, auth, 16) && !slot->route) {
+        slot->route = sent->route;
+        slot->id = sent->id;
+        sent->route = NULL;
+    }
+    pthread_mutex_unlock(&server->reverse_coa_lock);
+    reverse_coa_route_deref(sent->route);
+    sent->route = NULL;
+}
+
+static void cache_coa_dedup_reply(struct server *server, uint8_t id, uint8_t *auth,
+                                  uint8_t *buf, int buflen) {
+    struct coa_dedup_slot *slot;
+
+    pthread_mutex_lock(&server->reverse_coa_lock);
+    slot = &server->reverse_coa_seen[id];
+    if (!slot->occupied || memcmp(slot->auth, auth, 16) != 0 || slot->replybuf) {
+        pthread_mutex_unlock(&server->reverse_coa_lock);
+        return;
+    }
+    slot->replybuf = malloc(buflen);
+    if (slot->replybuf) {
+        memcpy(slot->replybuf, buf, buflen);
+        slot->replybuflen = buflen;
+    } else
+        debug(DBG_ERR, "cache_coa_dedup_reply: malloc failed");
+    pthread_mutex_unlock(&server->reverse_coa_lock);
+}
+
+void drain_coa_dedup(struct server *server) {
+    int i;
+
+    if (!server->reverse_coa_seen)
+        return;
+    pthread_mutex_lock(&server->reverse_coa_lock);
+    for (i = 0; i < MAX_REQUESTS; i++)
+        if (server->reverse_coa_seen[i].occupied)
+            clear_dedup_slot(&server->reverse_coa_seen[i]);
+    pthread_mutex_unlock(&server->reverse_coa_lock);
+}
+
+/* returns 1 if the request names the client by Operator-NAS-Identifier, NAS-Identifier,
+   NAS-IP-Address or NAS-IPv6-Address */
+static int match_nas_identifier(struct client *client, struct radmsg *msg) {
+    struct tlv *attr;
+    const char *id = client->conf->nas_identifier;
+    size_t idlen = id ? strlen(id) : 0;
+    struct sockaddr_in *sin;
+    struct sockaddr_in6 *sin6;
+
+    if (id) {
+        attr = radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier);
+        if (attr && attr->l == idlen + 1 && !memcmp(attr->v + 1, id, idlen))
+            return 1;
+        attr = radmsg_gettype(msg, RAD_Attr_NAS_Identifier);
+        if (attr && attr->l == idlen && !memcmp(attr->v, id, idlen))
+            return 1;
+    }
+    if (!client->addr)
+        return 0;
+    attr = radmsg_gettype(msg, RAD_Attr_NAS_IP_Address);
+    if (attr && attr->l == 4) {
+        if (client->addr->sa_family == AF_INET) {
+            sin = (struct sockaddr_in *)client->addr;
+            if (!memcmp(&sin->sin_addr, attr->v, 4))
+                return 1;
+        } else if (client->addr->sa_family == AF_INET6) {
+            sin6 = (struct sockaddr_in6 *)client->addr;
+            if (IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr) && !memcmp(&sin6->sin6_addr.s6_addr[12], attr->v, 4))
+                return 1;
+        }
+    }
+    attr = radmsg_gettype(msg, RAD_Attr_NAS_IPv6_Address);
+    if (attr && attr->l == 16 && client->addr->sa_family == AF_INET6) {
+        sin6 = (struct sockaddr_in6 *)client->addr;
+        if (!memcmp(&sin6->sin6_addr, attr->v, 16))
+            return 1;
+    }
+    return 0;
+}
+
+int _internal_match_nas_identifier(struct client *client, struct radmsg *msg) { return match_nas_identifier(client, msg); }
+
+/* rfc 8559 4.2: removed before the packet reaches the nas */
+void strip_operator_attrs(struct radmsg *msg) {
+    struct list_node *n, *p = NULL;
+    struct tlv *attr;
+
+    n = list_first(msg->attrs);
+    while (n) {
+        attr = (struct tlv *)n->data;
+        if (attr->t == RAD_Attr_Operator_Name ||
+            (attr->t == RAD_ExtAttr_Operator_NAS_Identifier.t && attr->l > 0 && attr->v[0] == RAD_ExtAttr_Operator_NAS_Identifier.s)) {
+            list_removedata(msg->attrs, attr);
+            freetlv(attr);
+            n = p ? list_next(p) : list_first(msg->attrs);
+        } else {
+            p = n;
+            n = list_next(n);
+        }
+    }
+}
+
+/* rfc 8559 4.2: the packet sent to the nas names it, by NASidentifier or by address */
+static int add_nas_identification(struct client *to, struct radmsg *msg) {
+    struct tlv *attr = NULL;
+    struct sockaddr_in6 *sin6;
+
+    if (radmsg_gettype(msg, RAD_Attr_NAS_Identifier) || radmsg_gettype(msg, RAD_Attr_NAS_IP_Address) ||
+        radmsg_gettype(msg, RAD_Attr_NAS_IPv6_Address))
+        return 1;
+    if (to->conf->nas_identifier)
+        attr = maketlv(RAD_Attr_NAS_Identifier, strlen(to->conf->nas_identifier), to->conf->nas_identifier);
+    else if (to->addr && to->addr->sa_family == AF_INET)
+        attr = maketlv(RAD_Attr_NAS_IP_Address, 4, &((struct sockaddr_in *)to->addr)->sin_addr);
+    else if (to->addr && to->addr->sa_family == AF_INET6) {
+        sin6 = (struct sockaddr_in6 *)to->addr;
+        if (IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr))
+            attr = maketlv(RAD_Attr_NAS_IP_Address, 4, &sin6->sin6_addr.s6_addr[12]);
+        else
+            attr = maketlv(RAD_Attr_NAS_IPv6_Address, 16, &sin6->sin6_addr);
+    } else
+        return 1;
+    if (!attr || !radmsg_add(msg, attr, 0)) {
+        freetlv(attr);
+        return 0;
+    }
+    return 1;
+}
+
+/* a client with NASidentifier is the nas, as is any udp client; the others are proxies */
+static int reverse_coa_final_hop(struct client *client) {
+    return client->conf->type == RAD_UDP || client->conf->nas_identifier != NULL;
+}
+
+static void expire_reverse_coa_rqs(struct client *client) {
+    struct timeval now;
+    struct rqout *rqout;
+    int i;
+
+    if (!client->reverse_coa_rqs)
+        return;
+    gettimeofday(&now, NULL);
+    for (i = 0; i < MAX_REQUESTS; i++) {
+        rqout = &client->reverse_coa_rqs[i];
+        if (rqout->rq && rqout->expiry.tv_sec > 0 && now.tv_sec > rqout->expiry.tv_sec) {
+            debug(DBG_NOTICE, "expire_reverse_coa_rqs: no answer to reverse coa request id %d from client %s, dropping",
+                  i, client->conf->name);
+            clear_rqout(client, rqout);
+        }
+    }
+}
+
+static int send_reverse_coa_nak(struct server *server, struct radmsg *req, uint32_t error_cause,
+                                uint8_t **out_buf, int *out_len) {
+    struct radmsg *nak;
+    uint8_t nakcode;
+    uint8_t *buf = NULL;
+    uint8_t ma_zeros[16] = {0};
+    int radlen;
+
+    if (out_buf)
+        *out_buf = NULL;
+    if (out_len)
+        *out_len = 0;
+
+    nakcode = coa_nak_code(req->code);
+    nak = radmsg_init(nakcode, req->id, req->auth);
+    if (!nak) {
+        debug(DBG_ERR, "send_reverse_coa_nak: malloc failed");
+        return 0;
+    }
+    if (!radmsg_add(nak, make_error_cause_tlv(error_cause), 0) || radmsg_copy_attrs(nak, req, RAD_Attr_Proxy_State) < 0 ||
+        !radmsg_add(nak, maketlv(RAD_Attr_Message_Authenticator, 16, ma_zeros), 0)) {
+        debug(DBG_ERR, "send_reverse_coa_nak: malloc failed");
+        radmsg_free(nak);
+        return 0;
+    }
+    radlen = radmsg2buf(nak, server->conf->secret, server->conf->secret_len, &buf);
+    if (radlen <= 0) {
+        debug(DBG_ERR, "send_reverse_coa_nak: radmsg2buf failed");
+        radmsg_free(nak);
+        return 0;
+    }
+    debug(DBG_INFO, "send_reverse_coa_nak: sending %s (id %d) with Error-Cause %u to server %s",
+          radmsgtype2string(nakcode), nak->id, error_cause, server->conf->name);
+    server->conf->pdef->clientradput(server, buf, radlen);
+    if (out_buf && out_len) {
+        *out_buf = buf;
+        *out_len = radlen;
+    } else
+        free(buf);
+    radmsg_free(nak);
+    return 1;
+}
+
+/* sends a copy of msg to the client with a new id and keeps it for the response
+   to from_server. returns 0 when sent, else the
+   Error-Cause for the nak. the caller holds the client's route locked, so the client
+   cannot go away meanwhile */
+static int send_coa_to_client(struct server *from_server, struct client *to_client,
+                              struct radmsg *msg, struct reverse_coa_sent *sent) {
+    struct request *rq;
+    struct rqout *rqout;
+    struct radmsg *copy;
+    uint8_t newid;
+    int attempts, replybuflen;
+    int final_hop = reverse_coa_final_hop(to_client);
+
+    if (!to_client->reverse_coa_route) {
+        debug(DBG_WARN, "send_coa_to_client: client %s not configured for reverse coa", to_client->conf->name);
+        return RAD_Err_Request_Not_Routable;
+    }
+
+    copy = radmsg_dup(msg);
+    if (!copy) {
+        debug(DBG_ERR, "send_coa_to_client: malloc failed");
+        return RAD_Err_Resources_Unavailable;
+    }
+    if (final_hop) {
+        strip_operator_attrs(copy);
+        if (!add_nas_identification(to_client, copy)) {
+            radmsg_free(copy);
+            return RAD_Err_Resources_Unavailable;
+        }
+    }
+    /* drop the previous hop's message-authenticator before signing, as radsrv() does */
+    if (!ensuremsgauthfront(copy)) {
+        radmsg_free(copy);
+        return RAD_Err_Resources_Unavailable;
+    }
+    rq = newrequest();
+    if (!rq) {
+        radmsg_free(copy);
+        return RAD_Err_Resources_Unavailable;
+    }
+
+    pthread_mutex_lock(&to_client->lock);
+    if (!to_client->reverse_coa_rqs)
+        to_client->reverse_coa_rqs = calloc(MAX_REQUESTS, sizeof(struct rqout));
+    if (!to_client->reverse_coa_rqs) {
+        pthread_mutex_unlock(&to_client->lock);
+        debug(DBG_ERR, "send_coa_to_client: malloc failed");
+        freerq(rq);
+        radmsg_free(copy);
+        return RAD_Err_Resources_Unavailable;
+    }
+    expire_reverse_coa_rqs(to_client);
+    for (attempts = 0; attempts < MAX_REQUESTS; attempts++) {
+        newid = to_client->reverse_coa_nextid++;
+        rqout = &to_client->reverse_coa_rqs[newid];
+        if (!rqout->rq)
+            break;
+    }
+    if (attempts >= MAX_REQUESTS) {
+        pthread_mutex_unlock(&to_client->lock);
+        debug(DBG_WARN, "send_coa_to_client: no free id for client %s", to_client->conf->name);
+        freerq(rq);
+        radmsg_free(copy);
+        return RAD_Err_Resources_Unavailable;
+    }
+
+    rq->rqid = msg->id;
+    memcpy(rq->rqauth, msg->auth, 16);
+    rq->to = from_server;
+    rq->from = to_client;
+    rq->udpsock = to_client->sock;
+    rq->newid = newid;
+    /* a udp client gets it on its coa port, not the port it last sent from */
+    if (to_client->conf->type == RAD_UDP && to_client->addr) {
+        rq->to_override = malloc(sizeof(struct sockaddr_storage));
+        if (!rq->to_override) {
+            pthread_mutex_unlock(&to_client->lock);
+            debug(DBG_ERR, "send_coa_to_client: malloc failed");
+            freerq(rq);
+            radmsg_free(copy);
+            return RAD_Err_Resources_Unavailable;
+        }
+        memset(rq->to_override, 0, sizeof(struct sockaddr_storage));
+        memcpy(rq->to_override, to_client->addr, SOCKADDRP_SIZE(to_client->addr));
+        port_set((struct sockaddr *)rq->to_override, (uint16_t)to_client->conf->coaport);
+    }
+    copy->id = newid;
+    memset(copy->auth, 0, 16); /* radmsgsign computes the request authenticator in place */
+    rq->msg = copy;
+    /* encode under the lock so sentauth is set before rqout->rq is visible */
+    replybuflen = radmsg2buf(rq->msg, to_client->conf->secret, to_client->conf->secret_len, &rq->replybuf);
+    if (replybuflen <= 0 || !rq->replybuf) {
+        pthread_mutex_unlock(&to_client->lock);
+        debug(DBG_ERR, "send_coa_to_client: radmsg2buf failed for client %s", to_client->conf->name);
+        freerq(rq);
+        return RAD_Err_Resources_Unavailable;
+    }
+    rq->replybuflen = replybuflen;
+    rqout->rq = rq;
+    to_client->reverse_coa_pending++;
+    gettimeofday(&rqout->expiry, NULL);
+    rqout->expiry.tv_sec += to_client->conf->reverse_coa_timeout;
+    memcpy(rqout->sentauth, rq->replybuf + 4, 16);
+    pthread_mutex_unlock(&to_client->lock);
+
+    debug(DBG_INFO, "send_coa_to_client: forwarding %s (id %d -> %d) to client %s%s",
+          radmsgtype2string(copy->code), msg->id, newid, to_client->conf->name, final_hop ? " (nas)" : "");
+    if (sendreply(newrqref(rq)) < 1) {
+        pthread_mutex_lock(&to_client->lock);
+        if (rqout->rq == rq)
+            clear_rqout(to_client, rqout);
+        pthread_mutex_unlock(&to_client->lock);
+        return RAD_Err_Resources_Unavailable;
+    }
+    if (sent) {
+        sent->route = to_client->reverse_coa_route;
+        sent->id = newid;
+    }
+    return 0;
+}
+
+/* sends down a route taken from the registry, the caller holds
+   a reference which moves to sent when the request went out */
+static int send_to_route(struct server *server, struct reverse_coa_route *route,
+                         struct radmsg *msg, struct reverse_coa_sent *sent) {
+    int result = RAD_Err_Request_Not_Routable;
+
+    pthread_mutex_lock(&route->refmutex);
+    if (route->target)
+        result = send_coa_to_client(server, route->target, msg, sent);
+    pthread_mutex_unlock(&route->refmutex);
+    if (result)
+        reverse_coa_route_deref(route);
+    return result;
+}
+
+/* the clients registered for the operator-name realm: the nas named in the request
+   if one of them is it, else a proxy; rfc 8559 3.3 when only nases are registered
+   and none is named. literal realm values are tried before regexps, so a catch-all
+   regexp does not take requests meant for a client registered by name */
+static int try_send_to_realm_clients(struct server *server, const char *realm,
+                                     struct radmsg *msg, struct reverse_coa_sent *sent) {
+    struct reverse_coa_route *nas = NULL, *proxies[MAX_REVERSE_COA_FAILOVER], *route;
+    struct reverse_coa_realm *r;
+    struct list_node *rnode, *node;
+    int nases = 0, nproxies = 0, i, pass, result = RAD_Err_Request_Not_Routable;
+
+    pthread_mutex_lock(&realm_reverse_coa_lock);
+    for (pass = 0; pass < 2; pass++) {
+        for (rnode = list_first(reverse_coa_realm_list); rnode; rnode = list_next(rnode)) {
+            r = (struct reverse_coa_realm *)rnode->data;
+            if ((r->value[0] == '/') != pass || regexec(&r->regex, realm, 0, NULL, 0))
+                continue;
+            for (node = list_first(r->routes); node; node = list_next(node)) {
+                route = (struct reverse_coa_route *)node->data;
+                pthread_mutex_lock(&route->refmutex);
+                if (route->target) {
+                    /* refmutex held, so the reference is taken directly */
+                    if (reverse_coa_final_hop(route->target)) {
+                        nases++;
+                        if (!nas && match_nas_identifier(route->target, msg)) {
+                            nas = route;
+                            route->refcount++;
+                        }
+                    } else if (nproxies < MAX_REVERSE_COA_FAILOVER) {
+                        proxies[nproxies++] = route;
+                        route->refcount++;
+                    }
+                }
+                pthread_mutex_unlock(&route->refmutex);
+            }
+        }
+    }
+    pthread_mutex_unlock(&realm_reverse_coa_lock);
+
+    if (nas) {
+        debug(DBG_DBG, "try_send_to_realm_clients: realm %s, the nas named in the request is registered", realm);
+        result = send_to_route(server, nas, msg, sent);
+    } else if (!nproxies)
+        result = nases ? RAD_Err_NAS_Identification_Mismatch : RAD_Err_Request_Not_Routable;
+    for (i = 0; i < nproxies; i++) {
+        if (result && result != RAD_Err_NAS_Identification_Mismatch) {
+            debug(DBG_DBG, "try_send_to_realm_clients: realm %s, trying a proxy", realm);
+            result = send_to_route(server, proxies[i], msg, sent);
+        } else
+            reverse_coa_route_deref(proxies[i]);
+    }
+    return result;
+}
+
+/* a client the request names by nas identity, for requests without operator-name */
+static int try_send_to_nas_client(struct server *server, struct radmsg *msg, struct reverse_coa_sent *sent) {
+    struct reverse_coa_route *route = NULL, *candidate;
+    struct list_node *node;
+
+    pthread_mutex_lock(&realm_reverse_coa_lock);
+    for (node = list_first(reverse_coa_nas_routes); node && !route; node = list_next(node)) {
+        candidate = (struct reverse_coa_route *)node->data;
+        pthread_mutex_lock(&candidate->refmutex);
+        if (candidate->target && match_nas_identifier(candidate->target, msg))
+            route = candidate;
+        pthread_mutex_unlock(&candidate->refmutex);
+    }
+    if (route)
+        reverse_coa_route_ref(route);
+    pthread_mutex_unlock(&realm_reverse_coa_lock);
+    if (!route)
+        return RAD_Err_Request_Not_Routable;
+    debug(DBG_DBG, "try_send_to_nas_client: the nas named in the request is a client");
+    return send_to_route(server, route, msg, sent);
+}
+
+/* by the operator-name realm (rfc 8559 3.2); a request without operator-name is
+   routed by nas identity. returns 0 when sent, else the Error-Cause for the nak */
+static int dispatch_reverse_coa(struct server *server, struct radmsg *msg, struct reverse_coa_sent *sent) {
+    char realm_buf[256];
+    char *realm = extract_operator_realm(msg, realm_buf, sizeof(realm_buf));
+    int result;
+
+    sent->route = NULL;
+    if (realm) {
+        result = try_send_to_realm_clients(server, realm, msg, sent);
+        if (result)
+            debug_limit(DBG_INFO, "dispatch_reverse_coa: no route for %s (id %d) with operator-name realm %s, Error-Cause %d",
+                        radmsgtype2string(msg->code), msg->id, realm, result);
+        return result;
+    }
+    result = try_send_to_nas_client(server, msg, sent);
+    if (result)
+        debug_limit(DBG_INFO, "dispatch_reverse_coa: no route for %s (id %d) without operator-name, Error-Cause %d",
+                    radmsgtype2string(msg->code), msg->id, result);
+    return result;
+}
+
+int _internal_dispatch_reverse_coa(struct server *server, struct radmsg *msg) { struct reverse_coa_sent sent; int result = dispatch_reverse_coa(server, msg, &sent); reverse_coa_route_deref(sent.route); return result; }
+
+static void route_reverse_coa(struct server *server, struct radmsg *msg) {
+    struct reverse_coa_sent sent;
+    uint8_t *nakbuf = NULL;
+    int naklen = 0, result;
+
+    record_coa_dedup(server, msg->id, msg->auth);
+    result = dispatch_reverse_coa(server, msg, &sent);
+    if (!result) {
+        record_coa_route(server, msg->id, msg->auth, &sent);
+        radmsg_free(msg);
+        return;
+    }
+    send_reverse_coa_nak(server, msg, result, &nakbuf, &naklen);
+    if (nakbuf) {
+        cache_coa_dedup_reply(server, msg->id, msg->auth, nakbuf, naklen);
+        free(nakbuf);
+    }
+    radmsg_free(msg);
+}
+
+static void handle_reverse_coa_request(struct server *server, uint8_t *buf, int len) {
+    struct radmsg *msg;
+
+    msg = buf2radmsg(buf, len, server->conf->secret, server->conf->secret_len, NULL);
+    if (!msg) {
+        debug_limit(DBG_INFO, "handle_reverse_coa_request: message decode error (code %d, id %d ?) from server %s",
+                    buf[0], buf[1], server->conf->name);
+        return;
+    }
+    if (msg->authstate != RSP_RADMSG_VALID && msg->authstate != RSP_RADMSG_MSGAUTH_VALID) {
+        debug_limit(DBG_WARN, "handle_reverse_coa_request: invalid %s in %s (id %d) from server %s, ignoring",
+                    msg->authstate == RSP_RADMSG_MSGAUTH_INVALID ? "message-authenticator" : "request-authenticator",
+                    radmsgtype2string(msg->code), msg->id, server->conf->name);
+        radmsg_free(msg);
+        return;
+    }
+    if (!event_timestamp_fresh(radmsg_gettype(msg, RAD_Attr_Event_Timestamp), REVERSE_COA_DEDUP_WINDOW)) {
+        debug_limit(DBG_NOTICE, "handle_reverse_coa_request: stale event-timestamp in %s (id %d) from server %s, ignoring",
+                    radmsgtype2string(msg->code), msg->id, server->conf->name);
+        radmsg_free(msg);
+        return;
+    }
+
+    expire_coa_dedup_entries(server);
+    if (is_coa_duplicate(server, msg)) {
+        radmsg_free(msg);
+        return;
+    }
+
+    debug(DBG_INFO, "handle_reverse_coa_request: received %s (id %d) from server %s",
+          radmsgtype2string(msg->code), msg->id, server->conf->name);
+    route_reverse_coa(server, msg);
+}
+
+/* answers the request a reverse coa response belongs to, to the server it came
+   from. returns 1 if the response matched a pending request */
+int forward_coa_response(struct client *from, struct radmsg *msg) {
+    struct rqout *rqout;
+    struct server *to_server;
+    struct radmsg *reply;
+    struct tlv *errorcause;
+    uint8_t sentcode, origid;
+    uint8_t origauth[16];
+    uint8_t *buf = NULL;
+    int radlen;
+
+    if (!from->reverse_coa_rqs)
+        return 0;
+
+    /* the originating server is freed under this lock, see freeserver(); held
+       until the answer is on its way */
+    pthread_mutex_lock(removeclientrqs_sendrq_freeserver_lock());
+    pthread_mutex_lock(&from->lock);
+    expire_reverse_coa_rqs(from);
+    rqout = &from->reverse_coa_rqs[msg->id];
+    if (!rqout->rq) {
+        pthread_mutex_unlock(&from->lock);
+        pthread_mutex_unlock(removeclientrqs_sendrq_freeserver_lock());
+        debug_limit(DBG_INFO, "forward_coa_response: no pending reverse coa request with id %d from client %s, ignoring %s",
+                    msg->id, from->conf->name, radmsgtype2string(msg->code));
+        return 0;
+    }
+    sentcode = rqout->rq->replybuf[0];
+    if (msg->code != (sentcode == RAD_CoA_Request ? RAD_CoA_ACK : RAD_Disconnect_ACK) &&
+        msg->code != (sentcode == RAD_CoA_Request ? RAD_CoA_NAK : RAD_Disconnect_NAK)) {
+        pthread_mutex_unlock(&from->lock);
+        pthread_mutex_unlock(removeclientrqs_sendrq_freeserver_lock());
+        debug(DBG_INFO, "forward_coa_response: %s (id %d) from client %s does not answer the %s sent, ignoring",
+              radmsgtype2string(msg->code), msg->id, from->conf->name, radmsgtype2string(sentcode));
+        return 0;
+    }
+    to_server = rqout->rq->to;
+    origid = rqout->rq->rqid;
+    memcpy(origauth, rqout->rq->rqauth, 16);
+    clear_rqout(from, rqout);
+    pthread_mutex_unlock(&from->lock);
+
+    errorcause = radmsg_gettype(msg, RAD_Attr_Error_Cause);
+    if (errorcause && errorcause->l == 4)
+        debug(DBG_INFO, "forward_coa_response: %s (id %d) from client %s with Error-Cause %u",
+              radmsgtype2string(msg->code), msg->id, from->conf->name, tlv2longint(errorcause));
+
+    reply = radmsg_dup(msg);
+    if (reply) {
+        reply->id = origid;
+        memcpy(reply->auth, origauth, 16);
+        if (!ensuremsgauthfront(reply)) {
+            radmsg_free(reply);
+            reply = NULL;
+        }
+    }
+    if (!reply)
+        debug(DBG_ERR, "forward_coa_response: malloc failed");
+    else {
+        radlen = radmsg2buf(reply, to_server->conf->secret, to_server->conf->secret_len, &buf);
+        radmsg_free(reply);
+        if (radlen <= 0)
+            debug(DBG_ERR, "forward_coa_response: radmsg2buf failed");
+        else {
+            debug(DBG_INFO, "forward_coa_response: %s (id %d) from client %s answers request id %d from server %s",
+                  radmsgtype2string(msg->code), msg->id, from->conf->name, origid, to_server->conf->name);
+            if (!to_server->conf->pdef->clientradput(to_server, buf, radlen))
+                debug(DBG_WARN, "forward_coa_response: sending %s (id %d) to server %s failed",
+                      radmsgtype2string(msg->code), origid, to_server->conf->name);
+            cache_coa_dedup_reply(to_server, origid, origauth, buf, radlen);
+            free(buf);
+        }
+    }
+    pthread_mutex_unlock(removeclientrqs_sendrq_freeserver_lock());
+    return 1;
+}
+
+void invalidate_reverse_coa_rqs_for_server(struct server *server, struct list *clconfs) {
+    struct list_node *confentry, *cliententry;
+    struct clsrvconf *conf;
+    struct client *client;
+    int i, cleaned = 0;
+
+    for (confentry = list_first(clconfs); confentry; confentry = list_next(confentry)) {
+        conf = (struct clsrvconf *)confentry->data;
+        if (!conf || !conf->clients)
+            continue;
+
+        pthread_mutex_lock(conf->lock);
+        for (cliententry = list_first(conf->clients); cliententry; cliententry = list_next(cliententry)) {
+            client = (struct client *)cliententry->data;
+            if (!client || !client->reverse_coa_rqs)
+                continue;
+
+            pthread_mutex_lock(&client->lock);
+            for (i = 0; i < MAX_REQUESTS; i++) {
+                struct rqout *rqout = &client->reverse_coa_rqs[i];
+                if (rqout->rq && rqout->rq->to == server) {
+                    debug(DBG_DBG, "invalidate_reverse_coa_rqs_for_server: clearing request id %d from client %s (server %s disconnecting)",
+                          i, client->conf->name, server->conf->name);
+                    clear_rqout(client, rqout);
+                    cleaned++;
+                }
+            }
+            pthread_mutex_unlock(&client->lock);
+        }
+        pthread_mutex_unlock(conf->lock);
+    }
+
+    if (cleaned > 0)
+        debug(DBG_INFO, "invalidate_reverse_coa_rqs_for_server: cleared %d pending requests for server %s",
+              cleaned, server->conf->name);
+}
+
+int lookup_reverse_coa_rqauth(struct client *from, uint8_t *buf, int buflen, uint8_t *out_auth) {
+    uint8_t resp_id;
+    struct rqout *rqout;
+
+    if (buflen < 2 || !from->reverse_coa_rqs)
+        return 0;
+    if (!IS_COA_RESPONSE(buf[0]))
+        return 0;
+
+    resp_id = buf[1];
+    pthread_mutex_lock(&from->lock);
+    rqout = &from->reverse_coa_rqs[resp_id];
+    if (rqout->rq) {
+        memcpy(out_auth, rqout->sentauth, 16);
+        pthread_mutex_unlock(&from->lock);
+        return 1;
+    }
+    pthread_mutex_unlock(&from->lock);
+    return 0;
+}
+
+int try_handle_reverse_coa_request(struct server *server, unsigned char *buf, int len) {
+    uint8_t code = buf[0];
+
+    if (IS_COA_REQUEST(code)) {
+        if (!server->conf->accept_reverse_coa) {
+            debug_limit(DBG_INFO, "try_handle_reverse_coa_request: %s from server %s ignored, acceptReverseCoA not enabled",
+                        radmsgtype2string(code), server->conf->name);
+        } else {
+            handle_reverse_coa_request(server, buf, len);
+        }
+        free(buf);
+        return 1;
+    }
+    return 0;
+}
+
+/* Local Variables: */
+/* c-file-style: "stroustrup" */
+/* End: */
