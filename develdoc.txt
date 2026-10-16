@@ -371,10 +371,11 @@ A CoA/Disconnect-Request from a server is taken by
 try_handle_reverse_coa_request() in the client reader, before replyh().
 handle_reverse_coa_request() verifies it with the server's secret and
 drops duplicates (per-server slots keyed by id and authenticator, 300s).
-dispatch_reverse_coa() then tries the clients registered with
-ReverseCoAOperatorRealm for the Operator-Name realm (literal values before regexps,
-a named NAS before a proxy) and, without Operator-Name, a client named by
-NASidentifier or address.
+dispatch_reverse_coa() then tries the client named by the token we added
+as Operator-NAS-Identifier, the clients registered with ReverseCoAOperatorRealm for
+the Operator-Name realm (literal values before regexps, a named NAS before
+a proxy) and, without Operator-Name, a client named by NASidentifier or
+address.
 
 send_coa_to_client() copies the message, strips Operator-Name and
 Operator-NAS-Identifier when the client is the NAS, takes a free id
@@ -389,6 +390,11 @@ verify it, and forward_coa_response() re-signs it for the originating
 server (clientradput). A udp
 response comes from the CoA port, so radudpget() falls back to
 findreversecoaclient().
+
+A proxy with several client connections for one operator must send a
+CoA down the connection that carried the session. The token we add as
+Operator-NAS-Identifier does that when the home server echoes it.
+The token is random, made in addclient() per connection or per udp block.
 
 Locks, in the order they are taken: the client conf lock, the registry
 lock (realm_reverse_coa_lock), a route's refmutex, the client lock, the

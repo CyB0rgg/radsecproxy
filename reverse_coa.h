@@ -18,7 +18,11 @@ int try_handle_reverse_coa_request(struct server *server, unsigned char *buf, in
 void drain_coa_dedup(struct server *server);
 struct reverse_coa_route *reverse_coa_route_new(struct client *target);
 void reverse_coa_route_deref(struct reverse_coa_route *route);
+int add_operator_nas_identifier(struct client *from, struct radmsg *msg);
+int reverse_coa_newtoken(char *token);
+int reverse_coa_token(const struct tlv *attr, char *token);
 void strip_operator_attrs(struct radmsg *msg);
+int reverse_coa_nas_addr(struct radmsg *msg, struct sockaddr_storage *out);
 int client_has_pending_reverse_coa(struct client *client);
 
 /* for the tests */

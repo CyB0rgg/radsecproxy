@@ -226,6 +226,23 @@ int main(int argc, char *argv[]) {
         freeclient(client);
     }
 
+    /* token */
+    {
+        char token[REVERSE_COA_TOKEN_LEN + 1], token2[REVERSE_COA_TOKEN_LEN + 1], parsed[REVERSE_COA_TOKEN_LEN + 1];
+        struct tlv *attr;
+
+        test_ok(reverse_coa_newtoken(token) && strlen(token) == REVERSE_COA_TOKEN_LEN, "token length");
+        test_ok(reverse_coa_newtoken(token2) && strcmp(token, token2) != 0, "tokens differ");
+        attr = makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, REVERSE_COA_TOKEN_LEN, token);
+        test_ok(attr && attr->l == REVERSE_COA_TOKEN_LEN + 1 && attr->v[0] == 8, "token as attribute 241.8");
+        test_ok(reverse_coa_token(attr, parsed) && !strcmp(parsed, token), "token parses");
+        freetlv(attr);
+        attr = makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, 9, (void *)"nas-1.lab");
+        test_ok(!reverse_coa_token(attr, parsed), "foreign identifier rejected");
+        freetlv(attr);
+        test_ok(!reverse_coa_token(NULL, parsed), "missing attribute rejected");
+    }
+
     /* operator attributes */
     {
         struct radmsg *msg = request(RAD_CoA_Request, 1, "1example.com", NULL);
@@ -238,6 +255,42 @@ int main(int argc, char *argv[]) {
         test_ok(!radmsg_gettype(msg, RAD_Attr_Operator_Name), "operator-name stripped");
         test_ok(!radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier), "operator-nas-identifier stripped");
         test_ok(radmsg_getexttype(msg, RAD_ExtAttr_Original_Packet_Code) && radmsg_gettype(msg, RAD_Attr_User_Name), "other attributes kept");
+        radmsg_free(msg);
+    }
+
+    /* operator-nas-identifier */
+    {
+        struct client *client = newclient("edge", NULL, NULL, "192.0.2.1");
+        struct radmsg *msg = request(RAD_Access_Request, 1, NULL, NULL);
+        struct tlv *attr;
+        struct list *ext;
+        char parsed[REVERSE_COA_TOKEN_LEN + 1];
+
+        strcpy(client->token, "0123456789abcdef");
+        test_ok(add_operator_nas_identifier(client, msg) && !radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier), "nothing added without operator-name");
+        radmsg_add(msg, maketlv(RAD_Attr_Operator_Name, 12, (void *)"4EXAMPLE:XX"), 0);
+        attr = add_operator_nas_identifier(client, msg) ? radmsg_getexttype(msg, RAD_ExtAttr_Operator_NAS_Identifier) : NULL;
+        test_ok(attr && reverse_coa_token(attr, parsed) && !strcmp(parsed, client->token), "added next to operator-name");
+        add_operator_nas_identifier(client, msg);
+        ext = radmsg_getalltype(msg, RAD_ExtAttr_Operator_NAS_Identifier.t);
+        test_eq(1, ext ? (int)list_count(ext) : 0, "no second operator-nas-identifier");
+        list_free(ext);
+        radmsg_free(msg);
+        freeclient(client);
+    }
+
+    /* nas address */
+    {
+        struct radmsg *msg = request(RAD_Disconnect_Request, 1, NULL, NULL);
+        struct sockaddr_storage ss;
+        uint8_t v4[4] = {10, 0, 0, 69};
+        uint8_t v6[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+
+        test_ok(!reverse_coa_nas_addr(msg, &ss), "no address attribute");
+        radmsg_add(msg, maketlv(RAD_Attr_NAS_IPv6_Address, 16, v6), 0);
+        test_ok(reverse_coa_nas_addr(msg, &ss) && ss.ss_family == AF_INET6 && !memcmp(&((struct sockaddr_in6 *)&ss)->sin6_addr, v6, 16), "nas-ipv6-address");
+        radmsg_add(msg, maketlv(RAD_Attr_NAS_IP_Address, 4, v4), 0);
+        test_ok(reverse_coa_nas_addr(msg, &ss) && ss.ss_family == AF_INET && !memcmp(&((struct sockaddr_in *)&ss)->sin_addr, v4, 4) && !((struct sockaddr_in *)&ss)->sin_port, "nas-ip-address preferred");
         radmsg_free(msg);
     }
 
@@ -367,6 +420,18 @@ int main(int argc, char *argv[]) {
         rq = queued(nas);
         test_ok(rq != NULL, "delivered by address");
         freerq(rq);
+
+        /* operator-nas-identifier names the connection, next to operator-name only */
+        strcpy(nas->token, "0123456789abcdef");
+        msg = request(RAD_CoA_Request, 12, "1example.org", NULL);
+        radmsg_add(msg, makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, REVERSE_COA_TOKEN_LEN, nas->token), 0);
+        test_eq(0, dispatch(server, msg), "token names the connection");
+        rq = queued(nas);
+        test_ok(rq != NULL, "delivered by token");
+        freerq(rq);
+        msg = request(RAD_CoA_Request, 13, NULL, NULL);
+        radmsg_add(msg, makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, REVERSE_COA_TOKEN_LEN, nas->token), 0);
+        test_eq(RAD_Err_Request_Not_Routable, dispatch(server, msg), "token without operator-name ignored");
 
     }
 

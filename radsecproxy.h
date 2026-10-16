@@ -34,6 +34,7 @@
 #define MAX_CERT_DEPTH 5
 #define STATUS_SERVER_PERIOD 25
 #define IDLE_TIMEOUT_DEFAULT 600
+#define REVERSE_COA_TOKEN_LEN 16
 #define PSK_MIN_LENGTH 16
 #define RSP_SECRET_LEN_WARN 12
 /* Older OpenSSL API had a 256 byte limit; keep this limit to maximize compatibility*/
@@ -208,6 +209,8 @@ struct clsrvconf {
     long reverse_coa_timeout;
     uint16_t coaport; /* reverse coa destination port for udp clients, default 3799 */
     uint8_t accept_coa;
+    uint8_t add_operator_nas_id;
+    char token[REVERSE_COA_TOKEN_LEN + 1]; /* udp clients share one token per block, see addclient() */
 };
 
 #include "tlscommon.h"
@@ -238,6 +241,7 @@ struct client {
     uint8_t reverse_coa_nextid;
     int reverse_coa_pending;
     struct reverse_coa_route *reverse_coa_route;
+    char token[REVERSE_COA_TOKEN_LEN + 1]; /* names this connection in Operator-NAS-Identifier */
 };
 
 struct server {

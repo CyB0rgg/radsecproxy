@@ -645,6 +645,15 @@ Seconds to wait for the NAS to answer a reverse CoA request before it is dropped
 (default 30, range 10-120).
 .RE
 
+.BR "AddOperatorNASIdentifier (" on | off )
+.RS
+Add an Operator-NAS-Identifier (RFC 8559 section 3.4) naming this client to forwarded
+Access-Request and Accounting-Request that carry Operator-Name and no
+Operator-NAS-Identifier yet (default \fBoff\fR). A CoA-Request or Disconnect-Request
+returning with the attribute is routed to this client before the realm and NAS
+identity matching. The udp clients of one block share the value.
+.RE
+
 .BR "AcceptCoA (" on | off )
 .RS
 Accept CoA-Request and Disconnect-Request from this client (default \fBoff\fR).
@@ -1003,9 +1012,11 @@ preferring one whose \fBNASidentifier\fR or \fBHost\fR the request names. When t
 names NASes and none matches the answer is Error-Cause 403; when no coaServer takes
 it otherwise, Error-Cause 502.
 
-A request from a server with \fBAcceptReverseCoA\fR goes to a client with a matching
-\fBReverseCoAOperatorRealm\fR, literal values before regexps and a named NAS before a proxy;
-or, without Operator-Name, to a client named by \fBNASidentifier\fR or address. An unknown Operator-Name realm is answered with
+A request from a server with \fBAcceptReverseCoA\fR goes to the first of: the client
+named by an Operator-NAS-Identifier this proxy added (\fBAddOperatorNASIdentifier\fR);
+a client with a matching \fBReverseCoAOperatorRealm\fR, literal values before regexps and a
+named NAS before a proxy; or, without Operator-Name, a client named by
+\fBNASidentifier\fR or address. An unknown Operator-Name realm is answered with
 Error-Cause 502, a known realm in which no NAS is named with 403, lack of resources
 with 506.
 
