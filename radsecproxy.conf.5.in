@@ -1030,8 +1030,9 @@ a client with a matching \fBReverseCoAOperatorRealm\fR, literal values before re
 named NAS before a proxy; or, without Operator-Name, a client named by
 \fBNASidentifier\fR or address. Among several proxies of the realm the one that carried
 the session goes first, known by Operator-Name realm with Chargeable-User-Identity or
-Acct-Session-Id; a session is only bound to a client registered for its realm, and a
-key seen on two connections is not used. A request never goes back to the client it
+Acct-Session-Id; a session is only bound to a client registered for its realm, a
+Chargeable-User-Identity seen on another connection follows it, and an Acct-Session-Id
+seen on two connections is not used. A request never goes back to the client it
 came from. An unknown Operator-Name realm is answered with Error-Cause 502, a known
 realm in which no NAS is named with 403, lack of resources with 506.
 

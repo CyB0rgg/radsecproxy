@@ -401,8 +401,10 @@ session binding is the fallback when it does not, or the connection it
 named is gone. sessionbind() binds Acct-Session-Id from a request, and
 Chargeable-User-Identity from the Access-Accept, with the Operator-Name
 realm to the client the session came through, only for a realm the client
-is registered for; a Stop unbinds. A key seen on two connections is
-marked ambiguous and not used. The binding only orders the proxies of a
+is registered for; a Stop unbinds. A Chargeable-User-Identity seen on
+another connection is the session moving and follows it; an
+Acct-Session-Id is only unique per NAS (RFC 2866), so one seen on two
+connections is marked ambiguous and not used. The binding only orders the proxies of a
 realm, it never overrides a NAS the request names. The table
 has 4096 buckets and an age list, at most 65536 entries kept for a day,
 so a lookup, a refresh and the eviction of the oldest entry cost the
