@@ -1016,6 +1016,10 @@ CoA-Request and Disconnect-Request (RFC 5176) are routed by Operator-Name (RFC 8
 section 3.2), never by User-Name. For namespace 1 the realm is the text after the
 namespace byte, example.com for 1example.com; for other namespaces it is the whole
 value, such as 4EXAMPLE:XX, matched against the realm block names like a User-Name realm.
+RFC 8559 describes the REALM namespace only. The other namespaces registered with IANA
+for the attribute, such as 4 for a WBAID (RFC 5580 section 4.1), carry no realm inside
+the value, so the whole value is the key; a proxy that only takes namespace 1 answers
+every OpenRoaming request with Error-Cause 502.
 
 A request from a client with \fBAcceptCoA\fR goes to a \fBcoaServer\fR of the realm,
 preferring one whose \fBNASidentifier\fR or \fBHost\fR the request names. When the realm
