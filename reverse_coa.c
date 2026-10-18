@@ -920,13 +920,22 @@ static void sessionbindset(struct reverse_coa_route *route, const char *key, uin
     pthread_mutex_lock(&sessionbind_lock);
     b = sessionbindfind(key, keylen);
     if (b) {
-        /* the same key from another connection: two sessions share a cui, or two nases
-           an acct-session-id, so the key names no connection any more */
         if (b->route != route && !b->ambiguous) {
-            debug(DBG_DBG, "sessionbindset: session key seen on two connections, ambiguous");
-            reverse_coa_route_deref(b->route);
-            b->route = NULL;
-            b->ambiguous = 1;
+            if ((uint8_t)key[strlen(key) + 1] == RAD_Attr_CUI) {
+                /* the user authenticated again on another connection: the session
+                   moved, and so does the binding */
+                debug(DBG_DBG, "sessionbindset: cui seen on another connection, rebound");
+                reverse_coa_route_deref(b->route);
+                reverse_coa_route_ref(route);
+                b->route = route;
+            } else {
+                /* an acct-session-id is only unique per nas (rfc 2866), so the same
+                   value from another connection names no connection any more */
+                debug(DBG_DBG, "sessionbindset: session key seen on two connections, ambiguous");
+                reverse_coa_route_deref(b->route);
+                b->route = NULL;
+                b->ambiguous = 1;
+            }
         }
         sessionbindtouch(b, now);
         pthread_mutex_unlock(&sessionbind_lock);

@@ -533,6 +533,19 @@ int main(int argc, char *argv[]) {
             radmsg_free(bind);
             radmsg_free(accept);
 
+            /* a cui on a second connection is the session moving: the last connection wins */
+            bind = request(RAD_Access_Request, 22, "1example.org", NULL);
+            accept = radmsg_init(RAD_Access_Accept, 22, NULL);
+            radmsg_add(accept, maketlv(RAD_Attr_CUI, 4, (void *)"cui2"), 0);
+            sessionbind(p2, bind, accept);
+            sessionbind(p1, bind, accept);
+            test_eq(0, dispatch(server, session(RAD_Disconnect_Request, 23, "1example.org", RAD_Attr_CUI, "cui2")), "cui rebound");
+            rq = queued(p1);
+            test_ok(rq && !queued(p2), "a cui seen on another connection follows it");
+            freerq(rq);
+            radmsg_free(bind);
+            radmsg_free(accept);
+
             /* bound to p1 by the last writer, p2 would win; ambiguous, the first proxy does */
             bind = session(RAD_Access_Request, 20, "1example.org", RAD_Attr_Acct_Session_Id, "s3");
             sessionbind(p2, bind, NULL);
