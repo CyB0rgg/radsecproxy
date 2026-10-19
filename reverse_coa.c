@@ -12,6 +12,7 @@
 #include "util.h"
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <openssl/hmac.h>
 #include <openssl/rand.h>
 #include <pthread.h>
 #include <regex.h>
@@ -98,6 +99,33 @@ int reverse_coa_newtoken(char *token) {
         return 0;
     for (i = 0; i < (int)sizeof(r); i++)
         sprintf(token + 2 * i, "%02x", r[i]);
+    return 1;
+}
+
+/* ReverseCoATokenKey: with it, a client's token is derived from its identity, so it is
+   the same after a restart and on every proxy sharing the key (rfc 8559 3.4 obfuscates
+   the nas address under a local key the same way) */
+static char *reverse_coa_token_key = NULL;
+
+void reverse_coa_settokenkey(const char *key) {
+    free(reverse_coa_token_key);
+    reverse_coa_token_key = key ? strdup(key) : NULL;
+}
+
+/* the token for a client named by identity (certificate subject, psk identity, or the
+   block name for udp clients); random when there is no key or no identity */
+int reverse_coa_peertoken(char *token, const char *identity) {
+    uint8_t md[EVP_MAX_MD_SIZE];
+    unsigned int mdlen = 0;
+    int i;
+
+    if (!reverse_coa_token_key || !identity || !*identity)
+        return reverse_coa_newtoken(token);
+    if (!HMAC(EVP_sha256(), reverse_coa_token_key, strlen(reverse_coa_token_key), (const uint8_t *)identity, strlen(identity), md, &mdlen) ||
+        mdlen < REVERSE_COA_TOKEN_LEN / 2)
+        return 0;
+    for (i = 0; i < REVERSE_COA_TOKEN_LEN / 2; i++)
+        sprintf(token + 2 * i, "%02x", md[i]);
     return 1;
 }
 
@@ -1175,7 +1203,7 @@ static int send_to_udp_block(struct server *server, struct request *origin, stru
         client = NULL;
     }
     if (!client) {
-        client = addclient(conf, sock, addr, 0);
+        client = addclient(conf, sock, addr, NULL, 0);
         if (client)
             debug(DBG_INFO, "send_to_udp_block: created client %s (%s) for reverse coa", conf->name, addr2string(addr, tmp, sizeof(tmp)));
     }

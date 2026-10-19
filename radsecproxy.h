@@ -315,7 +315,7 @@ struct clsrvconf *find_srvconf(uint8_t type, struct sockaddr *addr, struct list_
 struct list *find_all_clconf(uint8_t type, struct sockaddr *addr, struct list_node *cur, struct hostportres **hp);
 struct clsrvconf *find_clconf_type(uint8_t type, struct list_node **cur);
 struct client *addclient(struct clsrvconf *conf, int sock,
-                         const struct sockaddr *from, uint8_t lock);
+                         const struct sockaddr *from, const char *identity, uint8_t lock);
 void removelockedclient(struct client *client);
 void removeclient(struct client *client);
 pthread_mutex_t *removeclientrqs_sendrq_freeserver_lock(void);

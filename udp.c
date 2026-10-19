@@ -290,7 +290,7 @@ int radudpget(int s, struct client **client, struct server **server, unsigned ch
                       radmsgtype2string((*buf)[0]), (*buf)[1], addr2string((struct sockaddr *)&from, tmp, sizeof(tmp)), c->conf->name);
             }
             if (!*client) {
-                c = addclient(p, s, (struct sockaddr *)&from, 0);
+                c = addclient(p, s, (struct sockaddr *)&from, NULL, 0);
                 if (!c) {
                     pthread_mutex_unlock(p->lock);
                     continue;
