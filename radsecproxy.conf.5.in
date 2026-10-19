@@ -654,8 +654,8 @@ Access-Request and Accounting-Request that carry Operator-Name and no
 Operator-NAS-Identifier yet (default \fBoff\fR). A CoA-Request or Disconnect-Request
 returning with the attribute is routed to this client before the session, realm and
 NAS identity matching. The udp clients of one block share the value. The server that
-originates the request has to copy the attribute from the Access-Request it answered
-(RFC 8559 section 3.4): a NAS behind this proxy is never chosen by the session alone,
+originates the request has to record the attribute with the session and include it
+verbatim (RFC 8559 section 4.1): a NAS behind this proxy is never chosen by the session alone,
 and a realm with more than one NAS and none named is answered with Error-Cause 403.
 .RE
 
