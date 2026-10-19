@@ -653,7 +653,10 @@ Add an Operator-NAS-Identifier (RFC 8559 section 3.4) naming this client to forw
 Access-Request and Accounting-Request that carry Operator-Name and no
 Operator-NAS-Identifier yet (default \fBoff\fR). A CoA-Request or Disconnect-Request
 returning with the attribute is routed to this client before the session, realm and
-NAS identity matching. The udp clients of one block share the value.
+NAS identity matching. The udp clients of one block share the value. The server that
+originates the request has to copy the attribute from the Access-Request it answered
+(RFC 8559 section 3.4): a NAS behind this proxy is never chosen by the session alone,
+and a realm with more than one NAS and none named is answered with Error-Cause 403.
 .RE
 
 .BR "ReverseCoAFallback (" on | off )
@@ -1032,7 +1035,10 @@ A request from a server with \fBAcceptReverseCoA\fR goes to the first of: the cl
 named by an Operator-NAS-Identifier this proxy added (\fBAddOperatorNASIdentifier\fR);
 a client with a matching \fBReverseCoAOperatorRealm\fR, literal values before regexps and a
 named NAS before a proxy; or, without Operator-Name, a client named by
-\fBNASidentifier\fR or address. Among several proxies of the realm the one that carried
+\fBNASidentifier\fR or address. The session binding orders proxies only; a NAS is
+reached by the Operator-NAS-Identifier this proxy added, by NAS-Identifier or by
+address, so the originating server sends back the Operator-NAS-Identifier it received
+with the Access-Request. Among several proxies of the realm the one that carried
 the session goes first, known by Operator-Name realm with Chargeable-User-Identity or
 Acct-Session-Id; a session is only bound to a client registered for its realm, a
 Chargeable-User-Identity seen on another connection follows it; an Acct-Session-Id seen
