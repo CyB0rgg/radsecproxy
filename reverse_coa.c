@@ -911,6 +911,20 @@ static void sessionbindtouch(struct sessionbind *b, time_t now) {
     sessionbind_newest = b;
 }
 
+/* true when both routes lead to connections of one client block, or the old route's
+   connection is gone; only a live connection of another client makes a key ambiguous */
+static int sameclient(struct reverse_coa_route *old, struct reverse_coa_route *new) {
+    struct client *a, *b;
+
+    pthread_mutex_lock(&old->refmutex);
+    a = old->target;
+    pthread_mutex_unlock(&old->refmutex);
+    pthread_mutex_lock(&new->refmutex);
+    b = new->target;
+    pthread_mutex_unlock(&new->refmutex);
+    return !a || (b && a->conf == b->conf);
+}
+
 static void sessionbindset(struct reverse_coa_route *route, const char *key, uint32_t keylen) {
     struct sessionbind *b;
     uint32_t h;
@@ -925,6 +939,15 @@ static void sessionbindset(struct reverse_coa_route *route, const char *key, uin
                 /* the user authenticated again on another connection: the session
                    moved, and so does the binding */
                 debug(DBG_DBG, "sessionbindset: cui seen on another connection, rebound");
+                reverse_coa_route_deref(b->route);
+                reverse_coa_route_ref(route);
+                b->route = route;
+            } else if (sameclient(b->route, route)) {
+                /* the same client on another connection, or the old connection is gone: a
+                   nas with separate connections for authentication and accounting (hostapd
+                   keeps two) sends the same acct-session-id on both, and a nas that
+                   reconnected sends it again; the binding follows the connection last seen */
+                debug(DBG_DBG, "sessionbindset: session key seen on another connection of the same client, rebound");
                 reverse_coa_route_deref(b->route);
                 reverse_coa_route_ref(route);
                 b->route = route;
