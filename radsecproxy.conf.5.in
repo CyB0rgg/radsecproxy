@@ -338,6 +338,17 @@ up their state early and not having to wait for a timeout.
 This setting can be overridden per client (default on).
 .RE
 
+.BI "ReverseCoATokenKey " key
+.RS
+When set, the value that names a client in Operator-NAS-Identifier
+(\fBAddOperatorNASIdentifier\fR) is derived under this key from the client's
+certificate subject, its PSK identity, or the block name for udp clients. It is
+then the same after a restart and on every proxy configured with the same key,
+so a CoA-Request or Disconnect-Request that carries it still reaches the client
+after a reconnection. Without this option the value is random per connection.
+The key must be at least 16 characters; keep it as secret as a shared secret.
+.RE
+
 .BI "Include " file
 .RS
 This is not a normal configuration option; it can be specified multiple times.
@@ -657,6 +668,7 @@ NAS identity matching. The udp clients of one block share the value. The server 
 originates the request has to record the attribute with the session and include it
 verbatim (RFC 8559 section 4.1): a NAS behind this proxy is never chosen by the session alone,
 and a realm with more than one NAS and none named is answered with Error-Cause 403.
+See \fBReverseCoATokenKey\fR for a value that survives a reconnection.
 .RE
 
 .BR "ReverseCoAFallback (" on | off )

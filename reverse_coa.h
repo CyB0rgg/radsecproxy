@@ -21,6 +21,8 @@ void reverse_coa_route_deref(struct reverse_coa_route *route);
 int route_reverse_coa_from_client(struct request *rq);
 int add_operator_nas_identifier(struct client *from, struct radmsg *msg);
 int reverse_coa_newtoken(char *token);
+void reverse_coa_settokenkey(const char *key);
+int reverse_coa_peertoken(char *token, const char *identity);
 int reverse_coa_token(const struct tlv *attr, char *token);
 void strip_operator_attrs(struct radmsg *msg);
 int reverse_coa_nas_addr(struct radmsg *msg, struct sockaddr_storage *out);

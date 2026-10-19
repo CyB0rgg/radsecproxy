@@ -199,7 +199,7 @@ void removequeue(struct gqueue *q) {
 }
 
 struct client *addclient(struct clsrvconf *conf, int sock,
-                         const struct sockaddr *from, uint8_t lock) {
+                         const struct sockaddr *from, const char *identity, uint8_t lock) {
     struct client *new = NULL;
 
     if (lock)
@@ -223,12 +223,13 @@ struct client *addclient(struct clsrvconf *conf, int sock,
 
     new->conf = conf;
     new->sock = sock;
-    /* udp entries come and go with source ports, so they share the block's token */
+    /* udp entries come and go with source ports, so they share the block's token;
+       with ReverseCoATokenKey the token follows the identity, see reverse_coa_peertoken() */
     if (conf->type == RAD_UDP) {
-        if (!conf->token[0] && !reverse_coa_newtoken(conf->token))
+        if (!conf->token[0] && !reverse_coa_peertoken(conf->token, conf->name))
             goto out_undo_list;
         memcpy(new->token, conf->token, sizeof(new->token));
-    } else if (!reverse_coa_newtoken(new->token))
+    } else if (!reverse_coa_peertoken(new->token, identity))
         goto out_undo_list;
     /* addr must be set before the client is registered for reverse coa */
     if (from) {
@@ -3579,6 +3580,7 @@ void getmainconfig(const char *configfile) {
     char **sourceargs[RAD_PROTOCOUNT];
     char *log_mac_str = NULL;
     char *log_key_str = NULL;
+    char *reverse_coa_token_key_str = NULL;
     uint8_t *fticks_reporting_str = NULL;
     uint8_t *fticks_mac_str = NULL;
     uint8_t *fticks_key_str = NULL;
@@ -3632,6 +3634,7 @@ void getmainconfig(const char *configfile) {
             "LogThreadId", CONF_BLN, &options.logtid,
             "LogMAC", CONF_STR, &log_mac_str,
             "LogKey", CONF_STR, &log_key_str,
+            "ReverseCoATokenKey", CONF_STR_NOESC, &reverse_coa_token_key_str,
             "LogFullUsername", CONF_BLN, &options.logfullusername,
             "LoopPrevention", CONF_BLN, &options.loopprevention,
             "Client", CONF_CBK, confclient_cb, NULL,
@@ -3659,6 +3662,12 @@ void getmainconfig(const char *configfile) {
         if (loglevel < 1 || loglevel > 5)
             debugx(1, DBG_ERR, "error in %s, value of option LogLevel is %d, must be 1, 2, 3, 4 or 5", configfile, loglevel);
         options.loglevel = (uint8_t)loglevel;
+    }
+    if (reverse_coa_token_key_str != NULL) {
+        if (strlen(reverse_coa_token_key_str) < 16)
+            debugx(1, DBG_ERR, "error in %s, ReverseCoATokenKey must be at least 16 characters", configfile);
+        reverse_coa_settokenkey(reverse_coa_token_key_str);
+        free(reverse_coa_token_key_str);
     }
     if (log_mac_str != NULL) {
         if (strcasecmp(log_mac_str, "Static") == 0)

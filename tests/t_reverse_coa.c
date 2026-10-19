@@ -264,6 +264,17 @@ int main(int argc, char *argv[]) {
         test_ok(!reverse_coa_token(attr, parsed), "foreign identifier rejected");
         freetlv(attr);
         test_ok(!reverse_coa_token(NULL, parsed), "missing attribute rejected");
+
+        /* ReverseCoATokenKey: the token follows the identity */
+        reverse_coa_settokenkey("sixteen-char-key");
+        test_ok(reverse_coa_peertoken(token, "CN=nas-1,O=lab") && strlen(token) == REVERSE_COA_TOKEN_LEN, "keyed token length");
+        test_ok(reverse_coa_peertoken(token2, "CN=nas-1,O=lab") && !strcmp(token, token2), "keyed token is the same for the same identity");
+        test_ok(reverse_coa_peertoken(token2, "CN=nas-2,O=lab") && strcmp(token, token2) != 0, "keyed token differs per identity");
+        reverse_coa_settokenkey("another-key-of-16");
+        test_ok(reverse_coa_peertoken(token2, "CN=nas-1,O=lab") && strcmp(token, token2) != 0, "keyed token differs per key");
+        test_ok(reverse_coa_peertoken(token2, NULL) && strlen(token2) == REVERSE_COA_TOKEN_LEN, "no identity gives a random token");
+        reverse_coa_settokenkey(NULL);
+        test_ok(reverse_coa_peertoken(token2, "CN=nas-1,O=lab") && strcmp(token, token2) != 0, "without a key the token is random");
     }
 
     /* operator attributes */
