@@ -557,6 +557,38 @@ int main(int argc, char *argv[]) {
             freerq(rq);
             radmsg_free(bind);
 
+            /* the same client on a second connection: a nas with separate connections for
+               authentication and accounting sends the same acct-session-id on both */
+            {
+                struct client *p1b = calloc(1, sizeof(struct client));
+
+                p1b->conf = p1->conf;
+                pthread_mutex_init(&p1b->lock, NULL);
+                p1b->replyq = newqueue();
+                p1b->reverse_coa_route = reverse_coa_route_new(p1b);
+                register_reverse_coa_client(p1b);
+                bind = session(RAD_Access_Request, 26, "1example.org", RAD_Attr_Acct_Session_Id, "s7");
+                sessionbind(p1, bind, NULL);
+                sessionbind(p1b, bind, NULL);
+                test_eq(0, dispatch(server, session(RAD_Disconnect_Request, 27, "1example.org", RAD_Attr_Acct_Session_Id, "s7")), "same client, second connection");
+                rq = queued(p1b);
+                test_ok(rq && !queued(p1) && !queued(p2), "the binding follows the client's latest connection");
+                freerq(rq);
+                unregister_reverse_coa_client(p1b);
+                free_reverse_coa_rqs(p1b);
+                reverse_coa_route_deref(p1b->reverse_coa_route);
+                removequeue(p1b->replyq);
+                pthread_mutex_destroy(&p1b->lock);
+                free(p1b);
+                /* the connection it was bound to is gone: the next sighting rebinds, no ambiguity */
+                sessionbind(p1, bind, NULL);
+                test_eq(0, dispatch(server, session(RAD_Disconnect_Request, 28, "1example.org", RAD_Attr_Acct_Session_Id, "s7")), "after the bound connection closed");
+                rq = queued(p1);
+                test_ok(rq && !queued(p2), "a key from a closed connection is rebound");
+                freerq(rq);
+                radmsg_free(bind);
+            }
+
             bind = session(RAD_Access_Request, 22, "1example.com", RAD_Attr_Acct_Session_Id, "s4");
             sessionbind(p1, bind, NULL);
             len = sessionbindkey(bind, NULL, RAD_Attr_Acct_Session_Id, key, sizeof(key));
