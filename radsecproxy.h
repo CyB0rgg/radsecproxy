@@ -208,6 +208,7 @@ struct clsrvconf {
     regex_t *reverse_coa_regexes; /* reverse_coa_realms compiled, see reverse_coa_compile_realms() */
     uint8_t accept_reverse_coa;
     char *nas_identifier;
+    regex_t *nas_identifier_regex; /* NASidentifier given as /regexp/: every connection on the block is a nas */
     long reverse_coa_timeout;
     uint16_t coaport; /* reverse coa destination port for udp clients, default 3799 */
     uint8_t accept_coa;
@@ -245,6 +246,11 @@ struct client {
     int reverse_coa_pending;
     struct reverse_coa_route *reverse_coa_route;
     char token[REVERSE_COA_TOKEN_LEN + 1]; /* names this connection in Operator-NAS-Identifier */
+    /* what this connection says it is, for a NASidentifier /regexp/ block (learn_nas_identity()) */
+    char nas_identifier_seen[256];
+    uint8_t nas_identifier_seen_len;
+    struct sockaddr_storage nas_addr_seen;
+    uint8_t nas_addr_seen_set;
 };
 
 struct server {

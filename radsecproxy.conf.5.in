@@ -342,10 +342,14 @@ This setting can be overridden per client (default on).
 .RS
 When set, the value that names a client in Operator-NAS-Identifier
 (\fBAddOperatorNASIdentifier\fR) is derived under this key from the client's
-certificate subject, its PSK identity, or the block name for udp clients. It is
-then the same after a restart and on every proxy configured with the same key,
-so a CoA-Request or Disconnect-Request that carries it still reaches the client
-after a reconnection. Without this option the value is random per connection.
+certificate subject or PSK identity together with the address the connection comes
+from, or from the block name for udp clients. It is then the same after a restart
+and on every proxy configured with the same key, so a CoA-Request or
+Disconnect-Request that carries it still reaches the client after a reconnection
+from the same address. Several NASes presenting one certificate from different
+addresses get different values; from one address they share it and are told apart
+by what they send, see \fBNASidentifier\fR. Without this option the value is random
+per connection.
 The key must be at least 16 characters; keep it as secret as a shared secret.
 .RE
 
@@ -646,7 +650,17 @@ This client is the NAS. A reverse CoA-Request or Disconnect-Request whose
 NAS-Identifier or Operator-NAS-Identifier equals \fIidentifier\fR, or whose
 NAS-IP-Address or NAS-IPv6-Address is the client's address, is delivered here with
 Operator-Name and Operator-NAS-Identifier removed and NAS identification added if
-missing (RFC 8559 section 4.2). An idle udp client is reached by NAS-IP-Address,
+missing (RFC 8559 section 4.2).
+.IP
+Given as \fI/regexp/\fR, the block is a fleet of NASes, typically sharing one client
+certificate: each connection is the NAS whose own NAS-Identifier (admitted by the
+regexp) it has sent in its requests, or, when a NAS-Identifier is missing on either
+side, whose NAS-IP-Address or NAS-IPv6-Address it has sent. A connection that has not
+sent a request since it was established matches nothing yet. Two NASes on one
+certificate and one address that also send the same NAS-Identifier cannot be told
+apart; give each NAS its own certificate where you can.
+.IP
+An idle udp client is reached by NAS-IP-Address,
 NAS-IPv6-Address or, if the block names a single host, by \fIidentifier\fR; with several
 \fBListenUDP\fR addresses it is sent from the first one of the address family. A proxy
 below this one is configured with \fBReverseCoAOperatorRealm\fR only, never \fBNASidentifier\fR.

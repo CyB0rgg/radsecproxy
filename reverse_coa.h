@@ -22,13 +22,16 @@ int route_reverse_coa_from_client(struct request *rq);
 int add_operator_nas_identifier(struct client *from, struct radmsg *msg);
 int reverse_coa_newtoken(char *token);
 void reverse_coa_settokenkey(const char *key);
-int reverse_coa_peertoken(char *token, const char *identity);
+int reverse_coa_peertoken(char *token, const char *identity, const struct sockaddr *addr);
 int reverse_coa_token(const struct tlv *attr, char *token);
 void strip_operator_attrs(struct radmsg *msg);
 int reverse_coa_nas_addr(struct radmsg *msg, struct sockaddr_storage *out);
 int client_has_pending_reverse_coa(struct client *client);
 int reverse_coa_compile_realms(struct clsrvconf *conf);
 void reverse_coa_free_realms(struct clsrvconf *conf);
+int reverse_coa_compile_nas_identifier(struct clsrvconf *conf);
+void reverse_coa_free_nas_identifier(struct clsrvconf *conf);
+void learn_nas_identity(struct client *from, struct radmsg *msg);
 void sessionbind(struct client *client, struct radmsg *msg, struct radmsg *reply);
 int sessionbindkey(struct radmsg *msg, struct radmsg *reply, uint8_t attr, char *buf, size_t bufsize);
 

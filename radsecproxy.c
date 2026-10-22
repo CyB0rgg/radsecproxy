@@ -226,10 +226,10 @@ struct client *addclient(struct clsrvconf *conf, int sock,
     /* udp entries come and go with source ports, so they share the block's token;
        with ReverseCoATokenKey the token follows the identity, see reverse_coa_peertoken() */
     if (conf->type == RAD_UDP) {
-        if (!conf->token[0] && !reverse_coa_peertoken(conf->token, conf->name))
+        if (!conf->token[0] && !reverse_coa_peertoken(conf->token, conf->name, NULL))
             goto out_undo_list;
         memcpy(new->token, conf->token, sizeof(new->token));
-    } else if (!reverse_coa_peertoken(new->token, identity))
+    } else if (!reverse_coa_peertoken(new->token, identity, from))
         goto out_undo_list;
     /* addr must be set before the client is registered for reverse coa */
     if (from) {
@@ -1622,6 +1622,8 @@ int radsrv(struct request *rq) {
         debug(DBG_WARN, "radsrv: adding operator-nas-identifier failed, ignoring request");
         goto rmclrqexit;
     }
+    if (msg->code == RAD_Access_Request || msg->code == RAD_Accounting_Request)
+        learn_nas_identity(from, msg);
 
     sessionbind(from, msg, NULL);
 
@@ -2787,6 +2789,7 @@ void freeclsrvconf(struct clsrvconf *conf) {
 #endif
         reverse_coa_free_realms(conf);
         freegconfmstr(conf->reverse_coa_realms);
+        reverse_coa_free_nas_identifier(conf);
         free(conf->nas_identifier);
         free(conf->name);
         if (conf->hostsrc)
@@ -3092,6 +3095,8 @@ int confclient_cb(struct gconffile **cf, void *arg, char *block, char *opt, char
 
     if (!reverse_coa_compile_realms(conf))
         debugx(1, DBG_ERR, "error in block %s, invalid ReverseCoAOperatorRealm", block);
+    if (!reverse_coa_compile_nas_identifier(conf))
+        debugx(1, DBG_ERR, "error in block %s, invalid NASidentifier regexp", block);
 
     if (conf->reverse_coa_timeout == 0)
         conf->reverse_coa_timeout = 30;
