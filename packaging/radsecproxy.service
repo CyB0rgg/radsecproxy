@@ -1,0 +1,15 @@
+[Unit]
+Description=radsecproxy, RADIUS proxy with reverse CoA (reverse-coa-poc build)
+Documentation=man:radsecproxy(8) man:radsecproxy.conf(5)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/radsecproxy -f -c /etc/radsecproxy.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

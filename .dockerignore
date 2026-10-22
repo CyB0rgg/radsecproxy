@@ -1,0 +1,9 @@
+.git
+dist
+*.o
+*.a
+radsecproxy
+radsecproxy-hash
+tests/t_*
+!tests/*.c
+REVIEW-reverse-coa.md
