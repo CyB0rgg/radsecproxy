@@ -1,0 +1,61 @@
+# nfpm (https://nfpm.goreleaser.com) description of the reverse-coa-poc packages.
+# tools/package-nfpm.sh stages the files under dist/stage and fills in the version.
+name: radsecproxy
+arch: amd64
+platform: linux
+version: "@PKG_VERSION@"
+release: "@PKG_RELEASE@"
+version_schema: none
+section: net
+priority: optional
+maintainer: CyB0rgg <cyb0rgg@kiroshi.group>
+description: |
+  RADIUS proxy with reverse CoA (reverse-coa-poc build).
+  radsecproxy with the reverse CoA code of upstream pull requests #206 and #186
+  and the fleet commit, built from the reverse-coa-poc branch for evaluation.
+  Examples and bench records are under /usr/share/doc/radsecproxy.
+vendor: reverse-coa-poc
+homepage: https://github.com/CyB0rgg/radsecproxy/tree/reverse-coa-poc
+license: BSD-3-Clause
+contents:
+  - src: dist/stage/radsecproxy
+    dst: /usr/sbin/radsecproxy
+    file_info:
+      mode: 0755
+  - src: dist/stage/radsecproxy-hash
+    dst: /usr/sbin/radsecproxy-hash
+    file_info:
+      mode: 0755
+  - src: dist/stage/coaprobe.py
+    dst: /usr/share/radsecproxy/coaprobe.py
+    file_info:
+      mode: 0755
+  - src: packaging/radsecproxy.service
+    dst: /usr/lib/systemd/system/radsecproxy.service
+  - src: packaging/radsecproxy.conf
+    dst: /etc/radsecproxy.conf
+    type: config|noreplace
+  - src: dist/stage/radsecproxy.conf.5
+    dst: /usr/share/man/man5/radsecproxy.conf.5
+  - src: dist/stage/radsecproxy.8
+    dst: /usr/share/man/man8/radsecproxy.8
+  - src: dist/stage/radsecproxy-hash.8
+    dst: /usr/share/man/man8/radsecproxy-hash.8
+  - src: dist/stage/doc
+    dst: /usr/share/doc/radsecproxy
+    type: tree
+scripts:
+  postinstall: packaging/postinstall.sh
+overrides:
+  deb:
+    depends:
+      - libssl3
+  rpm:
+    depends:
+      - openssl-libs
+rpm:
+  group: System Environment/Daemons
+  summary: RADIUS proxy with reverse CoA (reverse-coa-poc build)
+deb:
+  fields:
+    Bugs: https://github.com/CyB0rgg/radsecproxy/issues
