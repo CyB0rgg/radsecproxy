@@ -289,6 +289,7 @@ struct gqueue *newqueue(void);
 struct request *newrequest(void);
 void freerq(struct request *rq);
 int radsrv(struct request *rq);
+int msgauthrequired(const struct clsrvconf *conf, struct radmsg *msg);
 struct realm *newrealmref(struct realm *r);
 struct clsrvconf *choosesrvconf(struct list *srvconfs);
 int addserver(struct clsrvconf *conf, const char *dynamiclookuparg);

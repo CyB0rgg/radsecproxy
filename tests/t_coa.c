@@ -316,6 +316,38 @@ static int build_coa_request_wire(uint8_t *buf, const char *secret, int corrupt_
     return length;
 }
 
+/* the message-authenticator requirement is for access-request, not for the coa codes */
+static void test_msgauth_required(void) {
+    struct clsrvconf conf;
+    struct radmsg *access = radmsg_init(RAD_Access_Request, 1, NULL);
+    struct radmsg *coa = radmsg_init(RAD_CoA_Request, 2, NULL);
+    struct radmsg *disconnect = radmsg_init(RAD_Disconnect_Request, 3, NULL);
+
+    memset(&conf, 0, sizeof(conf));
+    conf.type = RAD_UDP;
+    test_ok(!msgauthrequired(&conf, access), "nothing required by default");
+    conf.reqmsgauth = 1;
+    test_ok(msgauthrequired(&conf, access), "access-request on udp required");
+    test_ok(!msgauthrequired(&conf, coa), "coa-request not required");
+    test_ok(!msgauthrequired(&conf, disconnect), "disconnect-request not required");
+    conf.type = RAD_TCP;
+    test_ok(msgauthrequired(&conf, access), "access-request on tcp required");
+    test_ok(!msgauthrequired(&conf, coa), "coa-request on tcp not required");
+    conf.type = RAD_TLS;
+    test_ok(!msgauthrequired(&conf, access), "ignored on tls");
+    conf.type = RAD_UDP;
+    conf.reqmsgauth = 0;
+    conf.reqmsgauthproxy = 1;
+    test_ok(!msgauthrequired(&conf, access), "proxy flag without proxy-state not required");
+    radmsg_add(access, maketlv(RAD_Attr_Proxy_State, 4, (void *)"abcd"), 0);
+    test_ok(msgauthrequired(&conf, access), "proxy flag with proxy-state required");
+    radmsg_add(coa, maketlv(RAD_Attr_Proxy_State, 4, (void *)"abcd"), 0);
+    test_ok(!msgauthrequired(&conf, coa), "coa-request with proxy-state not required");
+    radmsg_free(access);
+    radmsg_free(coa);
+    radmsg_free(disconnect);
+}
+
 /* message-authenticator and request-authenticator for the coa codes */
 static void test_wire_format(void) {
     const char *secret = "testing123456";
@@ -366,6 +398,7 @@ int main(int argc, char *argv[]) {
     test_findcoaserver();
     test_findcoaserver_identity();
     test_findcoaserver_realms();
+    test_msgauth_required();
     test_wire_format();
 
     list_free(realms);
