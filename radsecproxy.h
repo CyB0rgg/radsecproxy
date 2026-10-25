@@ -332,6 +332,7 @@ int sendreply(struct request *rq);
 int ensuremsgauthfront(struct radmsg *msg);
 void freerq(struct request *rq);
 int radsrv(struct request *rq);
+int msgauthrequired(const struct clsrvconf *conf, struct radmsg *msg);
 struct realm *newrealmref(struct realm *r);
 struct clsrvconf *choosesrvconf(struct list *srvconfs);
 int addserver(struct clsrvconf *conf, const char *dynamiclookuparg);

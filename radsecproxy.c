@@ -1353,6 +1353,23 @@ int ensuremsgauthfront(struct radmsg *msg) {
     return 1;
 }
 
+/**
+ * @brief whether RequireMessageAuthenticator or RequireMessageAuthenticatorProxy applies to msg
+ *
+ * Only an Access-Request on UDP or TCP. A CoA-Request or Disconnect-Request may carry a
+ * Message-Authenticator (rfc 5176 section 3.4) and it is verified when present, but it is
+ * not required.
+ */
+int msgauthrequired(const struct clsrvconf *conf, struct radmsg *msg) {
+    if (conf->type != RAD_UDP && conf->type != RAD_TCP)
+        return 0;
+    if (msg->code != RAD_Access_Request)
+        return 0;
+    if (conf->reqmsgauth)
+        return 1;
+    return conf->reqmsgauthproxy && radmsg_gettype(msg, RAD_Attr_Proxy_State) != NULL;
+}
+
 /* Called from server readers, handling incoming requests from
  * clients. */
 /* returns 0 if validation/authentication fails, else 1 */
@@ -1440,13 +1457,9 @@ int radsrv(struct request *rq) {
         goto exit;
     }
 
-    if ((from->conf->reqmsgauth || from->conf->reqmsgauthproxy) && (from->conf->type == RAD_UDP || from->conf->type == RAD_TCP) &&
-        (msg->code == RAD_Access_Request || IS_COA_REQUEST(msg->code))) {
-        if (msg->authstate != RSP_RADMSG_MSGAUTH_VALID &&
-            (from->conf->reqmsgauth || (from->conf->reqmsgauthproxy && radmsg_gettype(msg, RAD_Attr_Proxy_State) != NULL))) {
-            debug_limit(DBG_INFO, "radsrv: ignoring request from client %s (%s), missing required message-authenticator", from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
-            goto exit;
-        }
+    if (msgauthrequired(from->conf, msg) && msg->authstate != RSP_RADMSG_MSGAUTH_VALID) {
+        debug_limit(DBG_INFO, "radsrv: ignoring request from client %s (%s), missing required message-authenticator", from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
+        goto exit;
     }
 
     /* rfc 5176 6.3: the same window as duplicate detection */
