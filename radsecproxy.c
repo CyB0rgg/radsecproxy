@@ -223,13 +223,14 @@ struct client *addclient(struct clsrvconf *conf, int sock,
 
     new->conf = conf;
     new->sock = sock;
-    /* udp entries come and go with source ports, so they share the block's token;
-       with ReverseCoATokenKey the token follows the identity, see reverse_coa_peertoken() */
-    if (conf->type == RAD_UDP) {
-        if (!conf->token[0] && !reverse_coa_peertoken(conf->token, conf->name, NULL))
-            goto out_undo_list;
-        memcpy(new->token, conf->token, sizeof(new->token));
-    } else if (!reverse_coa_peertoken(new->token, identity, from))
+    /* the token names the nas once it has sent a request, see learn_nas_identity();
+       until then it names the connection */
+    new->identity = strdup(identity && *identity ? identity : conf->name);
+    if (!new->identity) {
+        debug(DBG_ERR, "malloc failed");
+        goto out_undo_list;
+    }
+    if (!reverse_coa_peertoken(new->token, new->identity, from))
         goto out_undo_list;
     /* addr must be set before the client is registered for reverse coa */
     if (from) {
@@ -265,6 +266,7 @@ out_undo_client:
         removequeue(new->replyq);
 out_undo_list:
     free(new->addr);
+    free(new->identity);
     list_removedata(conf->clients, new);
 out_free_client:
     free(new);
@@ -323,6 +325,7 @@ void removelockedclient(struct client *client) {
         list_removedata(conf->clients, client);
         pthread_mutex_destroy(&client->lock);
         free(client->addr);
+        free(client->identity);
         free(client);
     }
 }
@@ -1630,13 +1633,13 @@ int radsrv(struct request *rq) {
         }
     }
 
+    if (msg->code == RAD_Access_Request || msg->code == RAD_Accounting_Request)
+        learn_nas_identity(from, msg);
     if (from->conf->add_operator_nas_id && (msg->code == RAD_Access_Request || msg->code == RAD_Accounting_Request) &&
         !add_operator_nas_identifier(from, msg)) {
         debug(DBG_WARN, "radsrv: adding operator-nas-identifier failed, ignoring request");
         goto rmclrqexit;
     }
-    if (msg->code == RAD_Access_Request || msg->code == RAD_Accounting_Request)
-        learn_nas_identity(from, msg);
 
     if ((msg->code == RAD_Access_Request || IS_COA_REQUEST(msg->code)) &&
         !ensuremsgauthfront(msg))

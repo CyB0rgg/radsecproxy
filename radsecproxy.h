@@ -214,7 +214,6 @@ struct clsrvconf {
     uint8_t accept_coa;
     uint8_t add_operator_nas_id;
     uint8_t reverse_coa_fallback;
-    char token[REVERSE_COA_TOKEN_LEN + 1]; /* udp clients share one token per block, see addclient() */
 };
 
 #include "tlscommon.h"
@@ -245,7 +244,8 @@ struct client {
     uint8_t reverse_coa_nextid;
     int reverse_coa_pending;
     struct reverse_coa_route *reverse_coa_route;
-    char token[REVERSE_COA_TOKEN_LEN + 1]; /* names this connection in Operator-NAS-Identifier */
+    char *identity;                        /* certificate subject, psk identity, or the block name */
+    char token[REVERSE_COA_TOKEN_LEN + 1]; /* names the nas on this connection in Operator-NAS-Identifier (learn_nas_identity()) */
     time_t last_request;                   /* when this connection last sent a request (learn_nas_identity()) */
     /* what this connection says it is, for a NASidentifier /regexp/ block (learn_nas_identity()) */
     char nas_identifier_seen[256];

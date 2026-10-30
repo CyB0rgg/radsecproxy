@@ -102,6 +102,7 @@ static struct client *newclienttype(uint8_t type, char *name, char *nasid, char 
     inet_pton(AF_INET, addr, &sin.sin_addr);
     client->conf = conf;
     client->addr = addr_copy((struct sockaddr *)&sin);
+    client->identity = strdup(name);
     pthread_mutex_init(&client->lock, NULL);
     client->replyq = newqueue();
     client->reverse_coa_route = reverse_coa_route_new(client);
@@ -120,6 +121,7 @@ static void freeclient(struct client *client) {
     removequeue(client->replyq);
     pthread_mutex_destroy(&client->lock);
     free(client->addr);
+    free(client->identity);
     list_free(client->conf->clients);
     reverse_coa_free_realms(client->conf);
     reverse_coa_free_nas_identifier(client->conf);
@@ -260,6 +262,30 @@ int main(int argc, char *argv[]) {
             test_ok(reverse_coa_peertoken(token2, "CN=nas-1,O=lab", (struct sockaddr *)&a) && strcmp(token, token2) != 0, "the peer address is part of the keyed token");
             test_ok(reverse_coa_peertoken(token3, "CN=nas-1,O=lab", (struct sockaddr *)&a) && !strcmp(token2, token3), "same identity and address, same token");
             test_ok(reverse_coa_peertoken(token3, "CN=nas-1,O=lab", (struct sockaddr *)&b) && strcmp(token2, token3) != 0, "one certificate from two addresses, two tokens");
+        }
+        /* the token of a nas that has sent a request: its identity and what it says it is */
+        {
+            struct radmsg *rq1 = request(RAD_Access_Request, 1, NULL, "ap-1"), *rq2 = request(RAD_Access_Request, 2, NULL, "ap-2");
+            struct radmsg *noid = request(RAD_Access_Request, 3, NULL, NULL), *bare = request(RAD_Access_Request, 4, NULL, NULL);
+            struct sockaddr_in a = {.sin_family = AF_INET}, b = {.sin_family = AF_INET};
+            uint8_t lan[4] = {10, 0, 0, 1};
+            char token3[REVERSE_COA_TOKEN_LEN + 1];
+
+            inet_pton(AF_INET, "198.51.100.1", &a.sin_addr);
+            inet_pton(AF_INET, "198.51.100.2", &b.sin_addr);
+            radmsg_add(noid, maketlv(RAD_Attr_NAS_IP_Address, 4, lan), 0);
+            test_ok(reverse_coa_nastoken(token, "CN=fleet,O=lab", rq1, (struct sockaddr *)&a) && strlen(token) == REVERSE_COA_TOKEN_LEN, "nas token length");
+            test_ok(reverse_coa_nastoken(token2, "CN=fleet,O=lab", rq1, (struct sockaddr *)&b) && !strcmp(token, token2), "same nas from another address, same token");
+            test_ok(reverse_coa_nastoken(token2, "CN=fleet,O=lab", rq1, NULL) && !strcmp(token, token2), "the address is not part of it");
+            test_ok(reverse_coa_nastoken(token2, "CN=fleet,O=lab", rq2, (struct sockaddr *)&a) && strcmp(token, token2) != 0, "another nas on the certificate, another token");
+            test_ok(reverse_coa_nastoken(token2, "CN=other,O=lab", rq1, (struct sockaddr *)&a) && strcmp(token, token2) != 0, "same nas-identifier on another certificate, another token");
+            test_ok(reverse_coa_nastoken(token2, "CN=fleet,O=lab", noid, (struct sockaddr *)&a) && strcmp(token, token2) != 0, "no nas-identifier: the nas address instead");
+            test_ok(reverse_coa_nastoken(token3, "CN=fleet,O=lab", noid, (struct sockaddr *)&b) && !strcmp(token2, token3), "the nas address from another peer address, same token");
+            test_ok(reverse_coa_nastoken(token2, "CN=fleet,O=lab", bare, (struct sockaddr *)&a) && reverse_coa_peertoken(token3, "CN=fleet,O=lab", (struct sockaddr *)&a) && !strcmp(token2, token3), "neither: the peer address, as before the first request");
+            radmsg_free(rq1);
+            radmsg_free(rq2);
+            radmsg_free(noid);
+            radmsg_free(bare);
         }
         reverse_coa_settokenkey("another-key-of-16");
         test_ok(reverse_coa_peertoken(token2, "CN=nas-1,O=lab", NULL) && strcmp(token, token2) != 0, "keyed token differs per key");
@@ -523,9 +549,12 @@ int main(int argc, char *argv[]) {
             struct client *site_b = newclienttype(RAD_TLS, "fleet", "/^site-/", literalrealm, "198.51.100.2");
             struct radmsg *acct;
             uint8_t lan[4] = {192, 168, 1, 1};
+            char before[REVERSE_COA_TOKEN_LEN + 1];
 
+            reverse_coa_settokenkey("sixteen-char-key");
             strcpy(site_a->token, "fedcba9876543210");
             strcpy(site_b->token, "fedcba9876543210");
+            strcpy(before, site_a->token);
             msg = request(RAD_CoA_Request, 16, "1example.com", "site-b");
             test_eq(RAD_Err_NAS_Identification_Mismatch, dispatch(server, msg), "fleet block, nothing learned yet, nas not found");
 
@@ -537,6 +566,8 @@ int main(int argc, char *argv[]) {
             radmsg_add(acct, maketlv(RAD_Attr_NAS_IP_Address, 4, lan), 0);
             learn_nas_identity(site_b, acct);
             radmsg_free(acct);
+            test_ok(strcmp(site_a->token, before) != 0 && strcmp(site_a->token, site_b->token) != 0, "a request sets the token from the nas-identifier, one per nas");
+            test_ok(site_a->last_request > 0, "a request stamps the connection");
             test_ok(_internal_match_nas_identifier(site_b, msg = request(RAD_CoA_Request, 0, NULL, "site-b")), "learned nas-identifier matches");
             test_ok(!_internal_match_nas_identifier(site_a, msg), "and not the other site, same lan address");
             radmsg_free(msg);
@@ -550,17 +581,39 @@ int main(int argc, char *argv[]) {
 
             msg = request(RAD_CoA_Request, 18, "1example.com", "site-a");
             radmsg_add(msg, makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, REVERSE_COA_TOKEN_LEN, site_a->token), 0);
-            test_eq(0, dispatch(server, msg), "fleet block, shared token, nas named");
+            test_eq(0, dispatch(server, msg), "fleet block, token names site-a");
             rq = queued(site_a);
-            test_ok(rq != NULL, "delivered to site-a by token and name");
+            test_ok(rq != NULL, "delivered to site-a by token");
             freerq(rq);
             test_ok(queued(site_b) == NULL, "not to site-b");
+
+            /* site-a reconnects from another address: a new connection, the same nas, the same
+               token after its first request; the old connection has not been reaped */
+            {
+                struct client *site_a2 = newclienttype(RAD_TLS, "fleet", "/^site-/", literalrealm, "203.0.113.9");
+
+                acct = request(RAD_Accounting_Request, 3, NULL, "site-a");
+                radmsg_add(acct, maketlv(RAD_Attr_NAS_IP_Address, 4, lan), 0);
+                learn_nas_identity(site_a2, acct);
+                radmsg_free(acct);
+                test_ok(!strcmp(site_a2->token, site_a->token), "same nas from a new address, same token");
+                site_a->last_request = site_a2->last_request - 60;
+                msg = request(RAD_CoA_Request, 21, "1example.com", NULL);
+                radmsg_add(msg, makeexttlv(RAD_ExtAttr_Operator_NAS_Identifier, REVERSE_COA_TOKEN_LEN, site_a->token), 0);
+                test_eq(0, dispatch(server, msg), "token on two connections, none named");
+                rq = queued(site_a2);
+                test_ok(rq != NULL, "delivered on the connection that spoke last");
+                freerq(rq);
+                test_ok(queued(site_a) == NULL, "not on the lingering one");
+                freeclient(site_a2);
+            }
 
             msg = request(RAD_CoA_Request, 19, "1example.com", "site-c");
             test_eq(RAD_Err_NAS_Identification_Mismatch, dispatch(server, msg), "fleet block, unknown nas is 403");
             msg = request(RAD_CoA_Request, 20, "1example.com", "other-b");
             test_eq(RAD_Err_NAS_Identification_Mismatch, dispatch(server, msg), "fleet block, name outside the regexp is 403");
 
+            reverse_coa_settokenkey(NULL);
             freeclient(site_a);
             freeclient(site_b);
         }

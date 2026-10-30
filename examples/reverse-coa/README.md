@@ -69,11 +69,14 @@ A client block is a NAS, not a proxy, when it has `NASidentifier`:
   certificate and one address that also send the same NAS-Identifier cannot be told
   apart.
 
-The Operator-NAS-Identifier added on the way up names the connection by certificate
-identity and source address under `ReverseCoATokenKey`, so with a fleet on one
-certificate each site still gets its own value, stable across reconnections from the
-same address. When several connections carry the same value, the NAS the request names
-wins, then the connection that sent a request most recently. The proxy keeps no record
+The Operator-NAS-Identifier added on the way up names the NAS: a keyed hash, under
+`ReverseCoATokenKey`, of the certificate identity and of the NAS-Identifier the NAS
+sends (its NAS-IP-Address when it sends none). The same NAS gets the same value on
+every connection, from every address, on every proxy with the key, so a fleet on one
+certificate gets one value per box and a CoA still reaches a box that reconnected.
+Two boxes on one certificate sending the same NAS-Identifier share a value; give them
+distinct identities. When several connections carry the same value, the NAS the
+request names wins, then the connection that sent a request most recently. The proxy keeps no record
 of which connection a session was seen on; a hub with several proxies registered for
 one realm tries them in the order they registered.
 

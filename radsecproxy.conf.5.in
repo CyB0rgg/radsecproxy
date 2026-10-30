@@ -340,16 +340,19 @@ This setting can be overridden per client (default on).
 
 .BI "ReverseCoATokenKey " key
 .RS
-When set, the value that names a client in Operator-NAS-Identifier
+When set, the value that names a NAS in Operator-NAS-Identifier
 (\fBAddOperatorNASIdentifier\fR) is derived under this key from the client's
-certificate subject or PSK identity together with the address the connection comes
-from, or from the block name for udp clients. It is then the same after a restart
-and on every proxy configured with the same key, so a CoA-Request or
-Disconnect-Request that carries it still reaches the client after a reconnection
-from the same address. Several NASes presenting one certificate from different
-addresses get different values; from one address they share it and are told apart
-by what they send, see \fBNASidentifier\fR. Without this option the value is random
-per connection.
+certificate subject or PSK identity (the block name for udp and tcp clients) and
+from what the NAS says it is: the NAS-Identifier it sends, or its NAS-IP-Address or
+NAS-IPv6-Address when it sends no NAS-Identifier. The value is then the same for one
+NAS on every connection, from every address, after a restart and on every proxy
+configured with the same key (RFC 8559 section 3.4, a token identifying a NAS,
+obfuscated under a local key), so a CoA-Request or Disconnect-Request that carries it
+reaches the NAS after a reconnection, from a new address too. A fleet of NASes on one
+certificate gets one value per NAS because each sends its own NAS-Identifier; two
+NASes on one certificate sending the same NAS-Identifier share a value and the one
+that sent a request most recently gets the request, which is logged as a warning
+when seen. Without this option the value is random per connection.
 The key must be at least 16 characters; keep it as secret as a shared secret.
 .RE
 
