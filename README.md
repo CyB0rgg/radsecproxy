@@ -64,8 +64,9 @@ flowchart LR
 
 **One proxy**, the enterprise and operator shape: the NASes, often a whole fleet on one
 client certificate, connect straight to the proxy in front of the home server. One
-client block serves the fleet; the proxy tells the connections apart by the address
-each comes from and by the NAS-Identifier each one sends.
+client block serves the fleet; the proxy tells the connections apart by the
+NAS-Identifier each one sends, and the Operator-NAS-Identifier it adds names that NAS,
+not the connection, so a NAS that reconnects is still reached.
 
 ```mermaid
 flowchart LR
@@ -77,8 +78,29 @@ flowchart LR
     P -. CoA, NAS 2's connection .-> N2
 ```
 
-How a request finds its NAS, what the originator has to send, and the two forms of
-`NASidentifier` (one NAS per block, or a fleet) are explained in
+**Two proxies at one site**: both take NAS connections and both connect to the hub, and
+the hub sends the CoA down either connection, routing on Operator-Name only. The proxy
+that receives it delivers to its own NAS or hands the request to the other over a link
+between the two (`ReverseCoASibling`), once. The hub keeps no record of which proxy or
+connection a session was seen on (RFC 8559 section 2.1); the site does its own routing
+(section 2.2).
+
+```mermaid
+flowchart LR
+    N1[NAS 1] -->|RadSec| E1[edge 1]
+    N2[NAS 2] -->|RadSec| E2[edge 2]
+    E1 -->|RadSec| I[hub or IDP-side proxy]
+    E2 -->|RadSec| I
+    E1 <-->|RadSec, sibling link| E2
+    I -->|RADIUS| H[home RADIUS server]
+    H -. CoA, loopback .-> I
+    I -. CoA, either connection .-> E1
+    E1 -. CoA for NAS 2, handed over .-> E2
+    E2 -. CoA, NAS 2's connection .-> N2
+```
+
+How a request finds its NAS, what the originator has to send, the two forms of
+`NASidentifier` (one NAS per block, or a fleet) and the sibling link are explained in
 [`examples/reverse-coa/README.md`](examples/reverse-coa/README.md).
 
 ## What is on this branch
