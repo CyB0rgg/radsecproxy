@@ -51,7 +51,9 @@ and routes a CoA back down by the same values. See:
   connections and each connected to the hub. The hub sends a CoA down either connection;
   the proxy that gets it delivers to its own NAS or hands the request to the other over a
   link between the two (`ReverseCoASibling` on a `client` and a `server` block on each
-  side), once. The hub needs no knowledge of which proxy holds which NAS.
+  side), once. The hub needs no knowledge of which proxy holds which NAS. With more
+  than one sibling, a 403 from one moves the request to the next; at a hub, a 502 from
+  one proxy of a realm moves it to the next (`ReverseCoARetryOnNak`, on by default).
 - `single-proxy.conf`: no ANP-side proxy; the NAS connects straight to the proxy in front
   of the home RADIUS server. The NAS block and the originator block in one instance. Tested
   in `docs/testing/mikrotik-routeros-single-proxy.md`.
