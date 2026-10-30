@@ -73,7 +73,9 @@ The Operator-NAS-Identifier added on the way up names the connection by certific
 identity and source address under `ReverseCoATokenKey`, so with a fleet on one
 certificate each site still gets its own value, stable across reconnections from the
 same address. When several connections carry the same value, the NAS the request names
-wins, then the connection the session is bound to.
+wins, then the connection that sent a request most recently. The proxy keeps no record
+of which connection a session was seen on; a hub with several proxies registered for
+one realm tries them in the order they registered.
 
 What the originator (the home RADIUS server) must send: Operator-Name, the echoed
 Operator-NAS-Identifier, and the NAS identification of RFC 5176 section 3

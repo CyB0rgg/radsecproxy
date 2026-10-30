@@ -32,8 +32,6 @@ void reverse_coa_free_realms(struct clsrvconf *conf);
 int reverse_coa_compile_nas_identifier(struct clsrvconf *conf);
 void reverse_coa_free_nas_identifier(struct clsrvconf *conf);
 void learn_nas_identity(struct client *from, struct radmsg *msg);
-void sessionbind(struct client *client, struct radmsg *msg, struct radmsg *reply);
-int sessionbindkey(struct radmsg *msg, struct radmsg *reply, uint8_t attr, char *buf, size_t bufsize);
 
 /* for the tests */
 int _internal_dispatch_reverse_coa(struct server *server, struct request *origin, struct radmsg *msg);
@@ -41,10 +39,6 @@ int _internal_is_coa_duplicate(struct server *server, struct radmsg *msg);
 void _internal_record_coa_dedup(struct server *server, uint8_t id, uint8_t *auth);
 int _internal_match_nas_identifier(struct client *client, struct radmsg *msg);
 struct client *_internal_reverse_coa_route_target(struct reverse_coa_route *route);
-void _internal_sessionbindset(struct reverse_coa_route *route, const char *key, uint32_t keylen);
-void _internal_sessionbindclear(const char *key, uint32_t keylen);
-int _internal_sessionbindfind(const char *key, uint32_t keylen);
-uint32_t _internal_sessionbindcount(void);
 
 #endif /* _REVERSE_COA_H */
 

@@ -246,6 +246,7 @@ struct client {
     int reverse_coa_pending;
     struct reverse_coa_route *reverse_coa_route;
     char token[REVERSE_COA_TOKEN_LEN + 1]; /* names this connection in Operator-NAS-Identifier */
+    time_t last_request;                   /* when this connection last sent a request (learn_nas_identity()) */
     /* what this connection says it is, for a NASidentifier /regexp/ block (learn_nas_identity()) */
     char nas_identifier_seen[256];
     uint8_t nas_identifier_seen_len;

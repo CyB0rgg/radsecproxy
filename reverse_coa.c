@@ -554,14 +554,18 @@ void drain_coa_dedup(struct server *server) {
     pthread_mutex_unlock(&server->reverse_coa_lock);
 }
 
-/* on a NASidentifier /regexp/ block, remember what the connection says it is: the
-   NAS-Identifier and the NAS-IP-Address or NAS-IPv6-Address of its own requests. a
-   CoA-Request or Disconnect-Request for it carries the same values (rfc 5176 section 3) */
+/* notes when the connection last sent a request and, on a NASidentifier /regexp/
+   block, what it says it is: the NAS-Identifier and the NAS-IP-Address or
+   NAS-IPv6-Address of its own requests. a CoA-Request or Disconnect-Request for it
+   carries the same values (rfc 5176 section 3) */
 void learn_nas_identity(struct client *from, struct radmsg *msg) {
     struct tlv *attr;
     struct sockaddr_storage addr;
     int has_addr;
 
+    pthread_mutex_lock(&from->lock);
+    time(&from->last_request);
+    pthread_mutex_unlock(&from->lock);
     if (!from->conf->nas_identifier_regex)
         return;
     attr = radmsg_gettype(msg, RAD_Attr_NAS_Identifier);
@@ -917,254 +921,8 @@ static int send_coa_to_client(struct server *from_server, struct request *origin
     return 0;
 }
 
-/* session binding: the client connection a session was seen on, keyed by the
-   operator-name realm and Acct-Session-Id or Chargeable-User-Identity, so a reverse
-   coa for the session goes down the same connection when several proxies are
-   registered for the realm. a key seen on two connections is ambiguous and not used */
-#define SESSIONBIND_MAX 65536
-#define SESSIONBIND_TTL 86400
-#define SESSIONBIND_BUCKETS 4096
-
-/* an entry sits in one bucket chain and in the age list, oldest first */
-struct sessionbind {
-    struct sessionbind *next;
-    struct sessionbind *older, *newer;
-    struct reverse_coa_route *route; /* NULL when ambiguous */
-    uint8_t ambiguous;
-    time_t seen;
-    char *key;
-    uint32_t keylen;
-};
-
-static struct sessionbind *sessionbinds[SESSIONBIND_BUCKETS];
-static struct sessionbind *sessionbind_oldest, *sessionbind_newest;
-static pthread_mutex_t sessionbind_lock = PTHREAD_MUTEX_INITIALIZER;
-static uint32_t sessionbindcount;
-
-/* key is <realm>\0<attr>\0<value>; attr 44 or 89 taken from reply if given, else msg */
-int sessionbindkey(struct radmsg *msg, struct radmsg *reply, uint8_t attr, char *buf, size_t bufsize) {
-    char opkey[256];
-    struct tlv *id;
-    size_t len, oplen;
-
-    id = radmsg_gettype(reply ? reply : msg, attr);
-    if (!id || !id->l)
-        return 0;
-    if (!extract_operator_realm(msg, opkey, sizeof(opkey)))
-        opkey[0] = '\0';
-    oplen = strlen(opkey);
-    len = oplen + 3 + id->l;
-    if (len > bufsize)
-        return 0;
-    memcpy(buf, opkey, oplen + 1);
-    buf[oplen + 1] = attr;
-    buf[oplen + 2] = '\0';
-    memcpy(buf + oplen + 3, id->v, id->l);
-    return (int)len;
-}
-
-static uint32_t sessionbindhash(const char *key, uint32_t keylen) {
-    uint32_t h = 2166136261u, i;
-
-    for (i = 0; i < keylen; i++) {
-        h ^= (uint8_t)key[i];
-        h *= 16777619u;
-    }
-    return h & (SESSIONBIND_BUCKETS - 1);
-}
-
-/* sessionbind_lock held */
-static struct sessionbind *sessionbindfind(const char *key, uint32_t keylen) {
-    struct sessionbind *b;
-
-    for (b = sessionbinds[sessionbindhash(key, keylen)]; b; b = b->next)
-        if (b->keylen == keylen && !memcmp(b->key, key, keylen))
-            return b;
-    return NULL;
-}
-
-/* takes the entry out of its bucket and the age list and frees it; sessionbind_lock held */
-static void sessionbindremove(struct sessionbind *b) {
-    struct sessionbind **p;
-
-    for (p = &sessionbinds[sessionbindhash(b->key, b->keylen)]; *p && *p != b; p = &(*p)->next)
-        ;
-    if (*p)
-        *p = b->next;
-    if (b->older)
-        b->older->newer = b->newer;
-    else
-        sessionbind_oldest = b->newer;
-    if (b->newer)
-        b->newer->older = b->older;
-    else
-        sessionbind_newest = b->older;
-    reverse_coa_route_deref(b->route);
-    free(b->key);
-    free(b);
-    sessionbindcount--;
-}
-
-/* makes the entry the newest; sessionbind_lock held */
-static void sessionbindtouch(struct sessionbind *b, time_t now) {
-    b->seen = now;
-    if (b == sessionbind_newest)
-        return;
-    if (b->older)
-        b->older->newer = b->newer;
-    else
-        sessionbind_oldest = b->newer;
-    if (b->newer)
-        b->newer->older = b->older;
-    b->older = sessionbind_newest;
-    b->newer = NULL;
-    if (sessionbind_newest)
-        sessionbind_newest->newer = b;
-    else
-        sessionbind_oldest = b;
-    sessionbind_newest = b;
-}
-
-/* true when both routes lead to connections of one client block, or the old route's
-   connection is gone; only a live connection of another client makes a key ambiguous */
-static int sameclient(struct reverse_coa_route *old, struct reverse_coa_route *new) {
-    struct client *a, *b;
-
-    pthread_mutex_lock(&old->refmutex);
-    a = old->target;
-    pthread_mutex_unlock(&old->refmutex);
-    pthread_mutex_lock(&new->refmutex);
-    b = new->target;
-    pthread_mutex_unlock(&new->refmutex);
-    return !a || (b && a->conf == b->conf);
-}
-
-static void sessionbindset(struct reverse_coa_route *route, const char *key, uint32_t keylen) {
-    struct sessionbind *b;
-    uint32_t h;
-    time_t now;
-
-    time(&now);
-    pthread_mutex_lock(&sessionbind_lock);
-    b = sessionbindfind(key, keylen);
-    if (b) {
-        if (b->route != route && !b->ambiguous) {
-            if ((uint8_t)key[strlen(key) + 1] == RAD_Attr_CUI) {
-                /* the user authenticated again on another connection: the session
-                   moved, and so does the binding */
-                debug(DBG_DBG, "sessionbindset: cui seen on another connection, rebound");
-                reverse_coa_route_deref(b->route);
-                reverse_coa_route_ref(route);
-                b->route = route;
-            } else if (sameclient(b->route, route)) {
-                /* the same client on another connection, or the old connection is gone: a
-                   nas with separate connections for authentication and accounting (hostapd
-                   keeps two) sends the same acct-session-id on both, and a nas that
-                   reconnected sends it again; the binding follows the connection last seen */
-                debug(DBG_DBG, "sessionbindset: session key seen on another connection of the same client, rebound");
-                reverse_coa_route_deref(b->route);
-                reverse_coa_route_ref(route);
-                b->route = route;
-            } else {
-                /* an acct-session-id is only unique per nas (rfc 2866), so the same
-                   value from another connection names no connection any more */
-                debug(DBG_DBG, "sessionbindset: session key seen on two connections, ambiguous");
-                reverse_coa_route_deref(b->route);
-                b->route = NULL;
-                b->ambiguous = 1;
-            }
-        }
-        sessionbindtouch(b, now);
-        pthread_mutex_unlock(&sessionbind_lock);
-        return;
-    }
-    /* expired entries and, at the limit, the oldest go from the old end of the age list */
-    while (sessionbind_oldest && (now - sessionbind_oldest->seen > SESSIONBIND_TTL || sessionbindcount >= SESSIONBIND_MAX))
-        sessionbindremove(sessionbind_oldest);
-    b = malloc(sizeof(struct sessionbind));
-    if (b)
-        b->key = malloc(keylen);
-    if (!b || !b->key) {
-        free(b);
-        debug(DBG_ERR, "sessionbindset: malloc failed");
-        pthread_mutex_unlock(&sessionbind_lock);
-        return;
-    }
-    memcpy(b->key, key, keylen);
-    b->keylen = keylen;
-    b->seen = now;
-    reverse_coa_route_ref(route);
-    b->route = route;
-    b->ambiguous = 0;
-    h = sessionbindhash(key, keylen);
-    b->next = sessionbinds[h];
-    sessionbinds[h] = b;
-    b->older = sessionbind_newest;
-    b->newer = NULL;
-    if (sessionbind_newest)
-        sessionbind_newest->newer = b;
-    else
-        sessionbind_oldest = b;
-    sessionbind_newest = b;
-    sessionbindcount++;
-    pthread_mutex_unlock(&sessionbind_lock);
-}
-
-static void sessionbindclear(const char *key, uint32_t keylen) {
-    struct sessionbind *b;
-
-    pthread_mutex_lock(&sessionbind_lock);
-    b = sessionbindfind(key, keylen);
-    if (b)
-        sessionbindremove(b);
-    pthread_mutex_unlock(&sessionbind_lock);
-}
-
-/* for the tests */
-void _internal_sessionbindset(struct reverse_coa_route *route, const char *key, uint32_t keylen) { sessionbindset(route, key, keylen); }
-void _internal_sessionbindclear(const char *key, uint32_t keylen) { sessionbindclear(key, keylen); }
-int _internal_sessionbindfind(const char *key, uint32_t keylen) {
-    int found;
-
-    pthread_mutex_lock(&sessionbind_lock);
-    found = sessionbindfind(key, keylen) != NULL;
-    pthread_mutex_unlock(&sessionbind_lock);
-    return found;
-}
-uint32_t _internal_sessionbindcount(void) { return sessionbindcount; }
-
-/* called for requests from a client registered for reverse coa (msg only) and for the
-   access-accept going back to it (msg and reply): Acct-Session-Id from the request,
-   Chargeable-User-Identity from the reply; an accounting stop unbinds. only realms
-   the client is registered for, so a client cannot bind sessions of another operator */
-void sessionbind(struct client *client, struct radmsg *msg, struct radmsg *reply) {
-    char key[512], realm[256];
-    struct tlv *attr;
-    int len;
-
-    if (!client || !client->reverse_coa_route)
-        return;
-    if (!extract_operator_realm(msg, realm, sizeof(realm)) || !conf_realm_matches(client->conf, realm))
-        return;
-    if (reply) {
-        if (reply->code == RAD_Access_Accept && (len = sessionbindkey(msg, reply, RAD_Attr_CUI, key, sizeof(key))) > 0)
-            sessionbindset(client->reverse_coa_route, key, len);
-        return;
-    }
-    if (msg->code != RAD_Access_Request && msg->code != RAD_Accounting_Request)
-        return;
-    len = sessionbindkey(msg, NULL, RAD_Attr_Acct_Session_Id, key, sizeof(key));
-    if (len <= 0)
-        return;
-    attr = radmsg_gettype(msg, RAD_Attr_Acct_Status_Type);
-    if (msg->code == RAD_Accounting_Request && attr && tlv2longint(attr) == RAD_Acct_Status_Stop)
-        sessionbindclear(key, len);
-    else
-        sessionbindset(client->reverse_coa_route, key, len);
-}
-
-/* sends down a route taken from the registry or the binding table, the caller holds
-   a reference which moves to sent when the request went out */
+/* sends down a route taken from the registry, the caller holds a reference which
+   moves to sent when the request went out */
 static int send_to_route(struct server *server, struct request *origin, struct reverse_coa_route *route,
                          struct radmsg *msg, struct reverse_coa_sent *sent) {
     int result = RAD_Err_Request_Not_Routable;
@@ -1176,29 +934,6 @@ static int send_to_route(struct server *server, struct request *origin, struct r
     if (result)
         reverse_coa_route_deref(route);
     return result;
-}
-
-/* the connection a session was seen on, see sessionbind(); a reference for the caller */
-static struct reverse_coa_route *sessionbind_route(struct radmsg *msg) {
-    char key[512];
-    struct sessionbind *b;
-    struct reverse_coa_route *route = NULL;
-    uint8_t attrs[] = {RAD_Attr_CUI, RAD_Attr_Acct_Session_Id};
-    int i, len;
-
-    for (i = 0; i < 2 && !route; i++) {
-        len = sessionbindkey(msg, NULL, attrs[i], key, sizeof(key));
-        if (len <= 0)
-            continue;
-        pthread_mutex_lock(&sessionbind_lock);
-        b = sessionbindfind(key, len);
-        if (b && b->route) {
-            route = b->route;
-            reverse_coa_route_ref(route);
-        }
-        pthread_mutex_unlock(&sessionbind_lock);
-    }
-    return route;
 }
 
 /* the nas address named in the request: NAS-IP-Address or NAS-IPv6-Address, port 0 */
@@ -1350,13 +1085,14 @@ static int try_send_to_udp_block(struct server *server, struct request *origin, 
 /* the connection named by the token we added on the way out; a udp token names the
    client block, the nas address picks the entry. with ReverseCoATokenKey the token
    follows the identity, so connections sharing a certificate share a token: among
-   them the nas the request names (rfc 5176 section 3) goes first, then the proxy the
-   session is bound to */
+   them the nas the request names (rfc 5176 section 3) goes first, then the connection
+   that sent a request most recently, which is the live one after a reconnection */
 static int try_send_to_token_client(struct server *server, struct request *origin, struct radmsg *msg, struct reverse_coa_sent *sent) {
-    struct reverse_coa_route *route = NULL, *named = NULL, *bound = NULL, *candidate;
+    struct reverse_coa_route *route = NULL, *named = NULL, *candidate;
     struct list_node *node;
     struct sockaddr_storage addr;
     char token[REVERSE_COA_TOKEN_LEN + 1];
+    time_t newest = 0, seen;
     int has_addr, matches = 0;
 #ifdef RADPROT_UDP
     struct clsrvconf *conf;
@@ -1376,8 +1112,15 @@ static int try_send_to_token_client(struct server *server, struct request *origi
             matches++;
             if (match_nas_identifier(candidate->target, msg))
                 named = candidate;
-            else if (!route)
-                route = candidate;
+            else {
+                pthread_mutex_lock(&candidate->target->lock);
+                seen = candidate->target->last_request;
+                pthread_mutex_unlock(&candidate->target->lock);
+                if (!route || seen > newest) {
+                    route = candidate;
+                    newest = seen;
+                }
+            }
         }
         pthread_mutex_unlock(&candidate->refmutex);
     }
@@ -1386,23 +1129,10 @@ static int try_send_to_token_client(struct server *server, struct request *origi
     if (route)
         reverse_coa_route_ref(route);
     pthread_mutex_unlock(&realm_reverse_coa_lock);
-    if (route && !named && matches > 1 && (bound = sessionbind_route(msg))) {
-        pthread_mutex_lock(&bound->refmutex);
-        if (!bound->target || strcmp(bound->target->token, token)) {
-            pthread_mutex_unlock(&bound->refmutex);
-            reverse_coa_route_deref(bound);
-            bound = NULL;
-        } else
-            pthread_mutex_unlock(&bound->refmutex);
-        if (bound) {
-            reverse_coa_route_deref(route);
-            route = bound;
-        }
-    }
     if (route) {
         if (matches > 1)
             debug(DBG_DBG, "try_send_to_token_client: %d connections carry the operator-nas-identifier, %s", matches,
-                  named ? "the nas named in the request is one of them" : bound ? "the session is bound to one of them" : "taking the first");
+                  named ? "the nas named in the request is one of them" : "taking the one that sent a request most recently");
         else
             debug(DBG_DBG, "try_send_to_token_client: operator-nas-identifier names a client connection");
         return send_to_route(server, origin, route, msg, sent);
@@ -1420,11 +1150,11 @@ static int try_send_to_token_client(struct server *server, struct request *origi
 /* the clients registered for the operator-name realm: the nas named in the request
    if one of them is it, else a proxy; rfc 8559 3.3 when only nases are registered
    and none is named. literal realm values are tried before regexps, so a catch-all
-   regexp does not take requests meant for a client registered by name. among
-   several proxies the connection the session is bound to goes first */
+   regexp does not take requests meant for a client registered by name. several
+   proxies are tried in the order they registered, the next when a send fails */
 static int try_send_to_realm_clients(struct server *server, struct request *origin, const char *realm,
                                      struct radmsg *msg, struct reverse_coa_sent *sent) {
-    struct reverse_coa_route *nas = NULL, *proxies[MAX_REVERSE_COA_FAILOVER], *route, *bound;
+    struct reverse_coa_route *nas = NULL, *proxies[MAX_REVERSE_COA_FAILOVER], *route;
     struct reverse_coa_realm *r;
     struct list_node *rnode, *node;
     int nases = 0, nproxies = 0, i, pass, result = RAD_Err_Request_Not_Routable;
@@ -1456,17 +1186,6 @@ static int try_send_to_realm_clients(struct server *server, struct request *orig
         }
     }
     pthread_mutex_unlock(&realm_reverse_coa_lock);
-
-    if (!nas && nproxies > 1 && (bound = sessionbind_route(msg))) {
-        for (i = 1; i < nproxies; i++)
-            if (proxies[i] == bound) {
-                debug(DBG_DBG, "try_send_to_realm_clients: realm %s, the session is bound to one of the proxies", realm);
-                proxies[i] = proxies[0];
-                proxies[0] = bound;
-                break;
-            }
-        reverse_coa_route_deref(bound);
-    }
 
     if (nas) {
         debug(DBG_DBG, "try_send_to_realm_clients: realm %s, the nas named in the request is registered", realm);
@@ -1505,9 +1224,9 @@ static int try_send_to_nas_client(struct server *server, struct request *origin,
     return send_to_route(server, origin, route, msg, sent);
 }
 
-/* by token, then the operator-name realm (rfc 8559 3.2), where the session binding
-   orders the proxies; a request without operator-name is routed by nas identity.
-   returns 0 when sent, else the Error-Cause for the nak */
+/* by token, then the operator-name realm (rfc 8559 3.2); a request without
+   operator-name is routed by nas identity. returns 0 when sent, else the Error-Cause
+   for the nak */
 static int dispatch_reverse_coa(struct server *server, struct request *origin, struct radmsg *msg, struct reverse_coa_sent *sent) {
     char realm_buf[256];
     char *realm = extract_operator_realm(msg, realm_buf, sizeof(realm_buf));
