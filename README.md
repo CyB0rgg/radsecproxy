@@ -99,6 +99,9 @@ flowchart LR
     E2 -. CoA, NAS 2's connection .-> N2
 ```
 
+Run on the bench on 30 October 2026, eight cases including the hand-over, the router moving
+between the edges and the link down: [`docs/testing/two-edge-site.md`](docs/testing/two-edge-site.md).
+
 How a request finds its NAS, what the originator has to send, the two forms of
 `NASidentifier` (one NAS per block, or a fleet) and the sibling link are explained in
 [`examples/reverse-coa/README.md`](examples/reverse-coa/README.md).

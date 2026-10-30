@@ -707,8 +707,10 @@ arrived from a sibling (a \fBserver\fR with \fBReverseCoASibling\fR) is never ha
 Two proxies of one site each have a \fBclient\fR and a \fBserver\fR block for the other.
 Only for tls and dtls clients; not combined with \fBNASidentifier\fR or
 \fBReverseCoAOperatorRealm\fR. The sibling is trusted like the server the request came
-from (RFC 5176 section 6.1, an explicitly authorised source). See \fBCOA/DISCONNECT
-ROUTING\fR.
+from (RFC 5176 section 6.1, an explicitly authorised source). Give the block an
+\fBidleTimeout\fR (and \fBtcpKeepalive\fR): a link that died unnoticed keeps its route and
+a request handed down it gets no answer until \fBReverseCoATimeout\fR; the same holds
+for any client block a reverse CoA is routed to. See \fBCOA/DISCONNECT ROUTING\fR.
 .RE
 
 .BR "ReverseCoAFallback (" on | off )
