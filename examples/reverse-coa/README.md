@@ -47,6 +47,11 @@ and routes a CoA back down by the same values. See:
   posted to the hostap mailing list in October 2026; stock hostapd has no reverse CoA.
 - `anp-proxy-udp-nas.conf`: the client block for a NAS that has no reverse CoA of its own;
   the last hop is then an ordinary RFC 5176 request on UDP 3799.
+- `anp-edge1.conf` and `anp-edge2.conf`: a site with two proxies, each taking NAS
+  connections and each connected to the hub. The hub sends a CoA down either connection;
+  the proxy that gets it delivers to its own NAS or hands the request to the other over a
+  link between the two (`ReverseCoASibling` on a `client` and a `server` block on each
+  side), once. The hub needs no knowledge of which proxy holds which NAS.
 - `single-proxy.conf`: no ANP-side proxy; the NAS connects straight to the proxy in front
   of the home RADIUS server. The NAS block and the originator block in one instance. Tested
   in `docs/testing/mikrotik-routeros-single-proxy.md`.
