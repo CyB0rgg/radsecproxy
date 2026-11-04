@@ -84,7 +84,10 @@ sends (its NAS-IP-Address when it sends none). The same NAS gets the same value 
 every connection, from every address, on every proxy with the key, so a fleet on one
 certificate gets one value per box and a CoA still reaches a box that reconnected.
 Two boxes on one certificate sending the same NAS-Identifier share a value; give them
-distinct identities. When several connections carry the same value, the NAS the
+distinct identities. A NAS that names itself by NAS-Identifier in authentication and
+by address only in accounting has a value per name; the connection keeps both and a
+CoA carrying either reaches it. A UDP NAS is named by the address it reports.
+When several connections carry the same value, the NAS the
 request names wins, then the connection that sent a request most recently. The proxy keeps no record
 of which connection a session was seen on; a hub with several proxies registered for
 one realm tries them in the order they registered.
