@@ -219,6 +219,70 @@ hub    forward_coa_response: CoA-NAK (id 1) from client lab-edge answers request
 Disconnect-ACK 4.0 ms; the session left `/ip hotspot active` and the Accounting-Stop came
 up through edge2 to the hub.
 
+## 3 November: the fixes from the blind reviews, on the bench
+
+Same hub and edges, the build with the review fixes (a candidate listed once; the plan freed
+when a named NAS took the request; expired requests handled by a sweeper thread, the next
+candidate or a 502 to the originator; a tls NAS with `addOperatorNASIdentifier` as the final
+hop; a `/regexp/` block naming the NAS by what it learned; TTL on the server path). No
+hotspot session this time: the runs below need none. Times UTC. Run directories under
+`/root/bench-ono/s1..s8b-*` on the hub host.
+
+- **Smoke, no NAS anywhere** (13:14:34). Hub to one edge, 502 after the sibling hand-over,
+  hub to the other, 502, relayed. NAK in 2.8 ms.
+- **Silent candidate** (13:17:31, `ReverseCoARetryOn403` on, the older instance up again as
+  a third connection of the realm, silent). Two 502s, then the request sat on the silent
+  connection; the sweeper expired it at 30 s and answered the originator 502. NAK after
+  30963 ms. On the 30 October build the same request vanished for good.
+- **Deadlock, before and after** (13:19 and 13:20). Hub block declaring the realm twice, a
+  request left on the silent connection, a second request after the timeout. Previous
+  binary: the second request hit the expiry inside the send and the hub never logged
+  another line; a third request was not even read by the listener; the service stayed
+  "active". New binary, same configuration: the realm declared twice gave one candidate,
+  both later requests were answered 502 after 30 s, 26 threads, alive.
+- **Memory** (13:23 to 13:40). 600 requests twice on the previous binary and twice on the new
+  one grew the hub by the same 1.7 to 1.9 MB per 600. Under AddressSanitizer with a clean
+  exit the leak checker reported nothing. The probe sent every request from a fresh source
+  port; the hub keeps a udp client entry per source address and port for 60 s (upstream
+  behaviour) and each carries a 256-slot request table. Bound to one source port: +132 KB
+  for the first 300, +12 KB for the next 300. Not a leak; an originator uses one port.
+- **Sustained load** (13:36, one request a second for five minutes at a silent candidate).
+  269 expiries handled, 238 originators answered 502, 31 dropped because the probe reused a
+  random Identifier while the earlier request was pending (the later one replaces it, as
+  for any client). Hub alive; a request after the storm answered at 31.7 s.
+- **Burst** (13:43, 300 requests at once). 256 parked on the silent connection and answered
+  502 at expiry, 44 beyond the Identifier space refused with 505 at once, all 300 answered
+  within 39 s, no thread or descriptor growth.
+
+Still owed a session on the router: the regression of the four October runs on this build,
+and the sibling link cut while the far edge holds the NAS, which should now end in a 502 at
+the timeout instead of the 34 s route drop.
+
+## 4 November: a session on a third edge, udp NAS, through the same hub
+
+The two lab edges as before, plus a third edge of the realm running on a laptop: a
+radsecproxy from this build with a udp client block for a RouterOS CHR (7.23.8) on the
+laptop's virtual network, connecting to the hub over a VPN with the same client
+certificate and token key, so the hub sees three connections of one client block. The
+session (`tester3`) was logged in on the CHR's HotSpot from the laptop itself by HTTP PAP;
+the value the edge added was the udp one, from the block name and the address the router
+reports (`e1a63268c9943892`). The originator did not send Acct-Session-Id (RouterOS does
+not show it); the router matched the session on User-Name and Framed-IP-Address. An
+older instance on the lab host, silent to reverse CoA, was also registered. Times UTC.
+
+- **Rate limit, wrong session id** (13:45:40). Hub to a lab edge, 502; to the silent
+  instance, no answer, moved on by the sweeper at 30 s; to the other lab edge, 502; to the
+  laptop edge, udp 3799 to the router, which refused with 406 (RouterOS: "request has
+  wrong attributes", the guessed Acct-Session-Id). NAK relayed after 36832 ms: the walk
+  across three sites and a silent one, ending at the NAS's own answer.
+- **Rate limit, no session id** (13:47:06). Hub to a lab edge, 502; to the laptop edge;
+  the router applied it ("Radius CoA succeeded"). ACK 200.9 ms.
+- **Disconnect** (13:47:33). Same path, Disconnect-ACK 164.4 ms, "logged out: radius
+  disconnect", the Accounting-Stop up through the laptop edge to the hub.
+
+Still owed: the sibling link cut with the far edge holding a RadSec NAS, which needs the
+session on the lab router.
+
 ## Reproducing
 
 Build the image or the binary from the branch tip; two instances from `examples/reverse-coa/
