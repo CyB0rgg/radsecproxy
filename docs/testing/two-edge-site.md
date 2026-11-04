@@ -178,6 +178,47 @@ queue went, and the Accounting-Stop came up through edge2 to the hub.
 - **The probe must name the NAS as the NAS does**: a CoA with a NAS-IP-Address the router
   does not own is answered 403 by the router (run 7), as RFC 5176 section 3.5 says.
 
+## Evening runs, 30 October: a value per name, and the hub walking on 403
+
+Same topology, the series plus two changes made after the maintainer's reading of it: a
+connection keeps a value per name the NAS has used (NAS-Identifier, NAS-IP-Address or
+NAS-IPv6-Address, the peer address) and a request carrying any of them reaches it, a udp
+NAS is named by the address it is reached at; and `ReverseCoARetryOn403`, off by default,
+lets a hub move a request to the next proxy of the realm on a 403 as it does on a 502.
+New login, `tester3`, Acct-Session-Id `80f00044`, router on edge2 (17:50:31). Times UTC.
+
+**1. Regression** (17:52:57). Known value `9a80d17790c9bab6`, hub to edge1, handed to
+edge2, delivered. ACK 5.2 ms, 2M/2M.
+
+**2. The address's value** (17:53:15). The same request carrying `6568454d86f6655d`, the
+value for the router's NAS-IP-Address under the key, computed offline and never put on any
+packet by a proxy: the edge had learned it from the router's own requests, which carry
+both NAS-Identifier and NAS-IP-Address. Hub to edge1, handed to edge2, matched on the
+router's connection. ACK 4.4 ms, 3M/3M. This is the case where the home holds the value
+from one packet and the NAS named itself another way in the next.
+
+**3. Hub walks on 403** (17:54:47, option on at the hub). The request names the router with
+a NAS-IP-Address it does not own, so the router itself answers 403 (RFC 5176 3.5). Hub to
+edge1, handed to edge2, 403 from the router; the hub moved to its second connection, edge2,
+the router answered 403 again; the hub then moved to its third connection and the request
+vanished until the timeout: a third instance on the edge host with the same certificate,
+an older build without reverse CoA handling, had registered for the realm. The walk
+reaches whatever is registered, so a candidate that takes a request and never answers
+ends the walk in silence, the same gap as this morning's, and the reason "move on when a
+forwarded copy expires" is the next change. Rerun with that instance stopped (**3b**,
+17:57:14): 403, walk, 403, the last 403 relayed. NAK 3.6 ms. The router saw the refused
+request twice, which is the cost the option carries and why it is off by default.
+```
+hub    forward_coa_response: CoA-NAK (id 1) from client lab-edge with Error-Cause 403
+hub    forward_coa_response: request id 28 tried on the next candidate after Error-Cause 403 from client lab-edge
+hub    forward_coa_response: CoA-NAK (id 1) from client lab-edge with Error-Cause 403
+hub    forward_coa_response: CoA-NAK (id 1) from client lab-edge answers request id 28 from client idp-coa
+```
+
+**4. Disconnect** (17:59:35, option off again). Hub to edge1, handed to edge2, delivered;
+Disconnect-ACK 4.0 ms; the session left `/ip hotspot active` and the Accounting-Stop came
+up through edge2 to the hub.
+
 ## Reproducing
 
 Build the image or the binary from the branch tip; two instances from `examples/reverse-coa/
