@@ -53,7 +53,9 @@ and routes a CoA back down by the same values. See:
   link between the two (`ReverseCoASibling` on a `client` and a `server` block on each
   side), once. The hub needs no knowledge of which proxy holds which NAS. With more
   than one sibling, a 403 from one moves the request to the next; at a hub, a 502 from
-  one proxy of a realm moves it to the next (`ReverseCoARetryOnNak`, on by default).
+  one proxy of a realm moves it to the next (`ReverseCoARetryOnNak`, on by default), and
+  a 403 too with `ReverseCoARetryOn403` (off by default), for a realm whose sites have no
+  link between their proxies.
   Run on the bench with a RouterOS HotSpot behind two edges:
   `docs/testing/two-edge-site.md`.
 - `single-proxy.conf`: no ANP-side proxy; the NAS connects straight to the proxy in front
