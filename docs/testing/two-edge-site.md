@@ -283,6 +283,38 @@ older instance on the lab host, silent to reverse CoA, was also registered. Time
 Still owed: the sibling link cut with the far edge holding a RadSec NAS, which needs the
 session on the lab router.
 
+## 4 November, evening: the October runs over RadSec on the final build
+
+The RouterOS CHR on the laptop again, this time as a RadSec NAS: the lab client certificate
+imported, a `/radius` entry with `protocol=radsec` to a TCP relay on the laptop that carries
+the connection into the VPN and on to edge2's port 2083, and a client block for the laptop's
+VPN address on each edge. Two things about RouterOS found on the way: it matches the
+server certificate's names against the address it dialled, so the edges' certificate was
+reissued with the relay address in its subject alternative names; and the `/radius` entry's
+`timeout` applies to RadSec too, so a home server four seconds away needs more than the
+default. The silent instance was stopped for these runs. Session `tester3`, the value
+the edge added `951c2f8e5f067c4d` (NAS-Identifier `OCC-IronWifi-MT-Test`). Times UTC.
+
+- **Hand-over** (20:29:02). Hub to edge1, no NAS, handed to edge2, delivered on the
+  router's RadSec connection. ACK 157.6 ms, "Radius CoA succeeded".
+- **The address's value over RadSec** (20:29:26). The same request carrying
+  `e252f947e4625ced`, the value for the router's NAS-IP-Address, computed offline and never
+  put on a packet by a proxy; the connection had learned it from the router's own requests.
+  ACK 127.6 ms.
+- **The router's own 403, walked** (20:30:11, `ReverseCoARetryOn403` on). Wrong
+  NAS-IP-Address: hub to edge1, handed to edge2, 403 from the router; the hub moved to
+  edge2 directly, 403 again, the last 403 relayed. NAK 145.2 ms.
+- **Sibling link cut, far edge holds the NAS** (20:30:47, both directions rejected on the
+  loopback). edge1 handed the request down its sibling connection, which was dead but not yet
+  noticed; the sweeper expired it at 30 s and edge1 answered 502; the hub moved to edge2,
+  which delivered. ACK 30947 ms. The hub's own timer for the request expired in the same
+  second, so the edge's 502 reached a request the hub had already moved on from: the hub's
+  `ReverseCoATimeout` on its edge blocks should exceed the edges' sibling timeout, so the
+  edge's answer is what moves the hub. On the 30 October build this request was lost until
+  the route dropped at 34 s.
+- **Disconnect** (20:31:47). Hand-over, Disconnect-ACK 112.4 ms, "logged out: radius
+  disconnect", the Accounting-Stop up through edge2 to the hub.
+
 ## Reproducing
 
 Build the image or the binary from the branch tip; two instances from `examples/reverse-coa/
