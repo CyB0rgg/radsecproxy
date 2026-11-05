@@ -413,6 +413,16 @@ wpa_supplicant logs under `/root/rcoa-bench/logs-twoedge/` on the hostapd host.
   the stage-6 edge was registered at the hub again and silent; stopped, repeated.
 - **Restored** (08:08). Router: the lab entries, certificates and files removed, the SmartCity
   entry enabled, backups kept. Mac: edge and relays stopped, certificate copies wiped.
+- **Burst at a silent candidate, the slot cap** (09:48 to 09:56, after the router window, the
+  dead udp NAS on both edges again). 300 from one source port: 256 parked on the first edge
+  with six resends each, moved to the second at the hub's timer, answered 502 at 31 and 62 s;
+  the probe's identifiers wrap at 256 from one port, so the last 44 replaced earlier ones at
+  the originator, not a proxy matter. 600 from three ports in a few milliseconds: the hub
+  received 336, the kernel's UDP receive-buffer counter took the rest; every one received was
+  handled. 600 from three ports paced over 1.9 s: all 600 received, 512 parked (256 per edge),
+  88 refused 505 at once with both edges' tables full, the 512 answered 502 at 30 to 33 s
+  (the hand-over at the timer found the other edge full too), no kernel drop, RSS 12968 to
+  13384 KB, 24 threads, no error line.
 
 ## Reproducing
 
