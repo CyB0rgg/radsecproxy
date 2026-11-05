@@ -5,10 +5,13 @@ RFC 8559 routing) in radsecproxy before it is merged upstream.
 
 ## What is on this branch
 
-- The code exactly as it stands in the upstream pull requests
+- The code of the upstream pull requests
   [#206](https://github.com/radsecproxy/radsecproxy/pull/206) (CoA proxying by Operator-Name) and
-  [#186](https://github.com/radsecproxy/radsecproxy/pull/186) (reverse CoA), taken from the PR
-  branches by commit, not re-applied. The base commit of this branch is the current head of #186.
+  [#186](https://github.com/radsecproxy/radsecproxy/pull/186) (reverse CoA), plus the
+  Operator-Name-only series on top of #186's reverse CoA commit: routing by Operator-Name
+  alone, a value naming the NAS, sibling proxies, the error causes, the hub walking a realm.
+  The series itself, as offered to the pull-request author, is branch `reverse-coa-series`
+  on this fork; this branch carries the same code with the files below on top.
 - `examples/reverse-coa/`: configuration for the two proxy roles and a RouterOS snippet.
 - `docs/testing/`: bench records against real NAS equipment.
 - `tools/coaprobe.py`: a small originator for CoA-Request and Disconnect-Request, to test
@@ -46,7 +49,8 @@ and routes a CoA back down by the same values. See:
   delivers the CoA on it. For hostapd as the NAS, use the RADIUS/TLS reverse CoA series
   posted to the hostap mailing list in October 2026; stock hostapd has no reverse CoA.
 - `anp-proxy-udp-nas.conf`: the client block for a NAS that has no reverse CoA of its own;
-  the last hop is then an ordinary RFC 5176 request on UDP 3799.
+  the last hop is then an ordinary RFC 5176 request on UDP 3799, sent again every 5 seconds
+  until the NAS answers or `ReverseCoATimeout` passes.
 - `anp-edge1.conf` and `anp-edge2.conf`: a site with two proxies, each taking NAS
   connections and each connected to the hub. The hub sends a CoA down either connection;
   the proxy that gets it delivers to its own NAS or hands the request to the other over a
@@ -64,6 +68,10 @@ and routes a CoA back down by the same values. See:
 - `routeros.rsc`: the RouterOS side, as used in `docs/testing/mikrotik-routeros-hotspot.md`.
 
 Replace every `<...>` placeholder. The two `ReverseCoATokenKey` values must be the same.
+A client block with `acceptCoA` gets `DuplicateInterval 300`: RFC 5176 section 6.3 wants
+the stale Event-Timestamp window the same as the duplicate detection window and suggests
+300 seconds, and a request of its own answered through the reverse routes must outlive
+`ReverseCoATimeout`.
 
 ## NASidentifier: one NAS per block, or a fleet
 

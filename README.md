@@ -37,9 +37,11 @@ flowchart LR
 
 **UDP last hop**: a NAS that speaks plain RADIUS over UDP to its proxy and has no
 reverse CoA. The way down to it is an ordinary RFC 5176 request on UDP 3799, which the
-NAS has to accept from the proxy's address (`anp-proxy-udp-nas.conf`). Run on the bench
-with the router over UDP into a single proxy, section 6 of the RouterOS record, after the
-same path through two proxies on 7 October.
+NAS has to accept from the proxy's address (`anp-proxy-udp-nas.conf`); the proxy sends it
+again every 5 seconds until the NAS answers or `ReverseCoATimeout` passes. Run on the
+bench with the router over UDP into a single proxy, section 6 of the RouterOS record, after
+the same path through two proxies on 7 October, and behind a third edge through the hub on
+4 and 5 November (`docs/testing/two-edge-site.md`).
 
 The last hop, case by case:
 
