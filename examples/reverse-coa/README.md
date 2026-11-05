@@ -68,10 +68,10 @@ and routes a CoA back down by the same values. See:
 - `routeros.rsc`: the RouterOS side, as used in `docs/testing/mikrotik-routeros-hotspot.md`.
 
 Replace every `<...>` placeholder. The two `ReverseCoATokenKey` values must be the same.
-A client block with `acceptCoA` gets `DuplicateInterval 300`: RFC 5176 section 6.3 wants
-the stale Event-Timestamp window the same as the duplicate detection window and suggests
-300 seconds, and a request of its own answered through the reverse routes must outlive
-`ReverseCoATimeout`.
+A client block with `acceptCoA` gets `DuplicateInterval 255`, the option's maximum: RFC 5176
+section 6.3 wants the stale Event-Timestamp window the same as the duplicate detection
+window and suggests 300 seconds, which the 8-bit option cannot hold, and a request of its
+own answered through the reverse routes must outlive `ReverseCoATimeout`.
 
 ## NASidentifier: one NAS per block, or a fleet
 
