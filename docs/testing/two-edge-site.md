@@ -376,6 +376,44 @@ afternoon and evening). The code paths they exercise beyond the above are the NA
 on a real connection and the hand-over to the edge holding it; both ran unchanged in the unit
 tests, and the ACK path on a live connection is the next thing to repeat.
 
+## 5 November: the router sessions and hostapd on two edges, on the final build
+
+The final build (series tip, commit 11 included) on the hub and both edges, the Mac edge for
+the udp case on the same source. The three scenarios the 4 November record listed as not run
+on this build, plus the two never run on any build. Times UTC, run directories
+`/root/bench-ono/h1b*, h2*, c1b*, c2b*, c3*, u1b*, u2b*` on the hub host; the hostapd and
+wpa_supplicant logs under `/root/rcoa-bench/logs-twoedge/` on the hostapd host.
+
+- **hostapd, authentication on edge1 and accounting on edge2** (07:53). hostapd on its
+  virtual radio with the bundled supplicant, auth server edge1 (2084), accounting server
+  edge2 (2083), identity bob@coa.lab answered through the hub. Disconnect through the hub:
+  the hub picked edge1, which sent it down hostapd's authentication connection,
+  Disconnect-ACK in 4.5 ms, station deauthenticated, supplicant reconnected. A first probe
+  with the inner identity as User-Name was refused 503 by hostapd itself: the session's
+  User-Name is the outer one (anonymous@coa.lab), the Acct-Session-Id matched. Then edge1
+  restarted so the hub would pick edge2, which holds only the accounting connection: the
+  Disconnect went down that connection, ACK in 8.9 ms, station deauthenticated. Both edges
+  name the NAS by the same value and either connection carries the request (07:54, 07:55).
+- **The router over RadSec, hand-over** (08:00). UTM CHR on the lab edge through the Mac
+  relay, hotspot login tester3. CoA with Mikrotik-Rate-Limit: hub to edge1, no NAS there,
+  hand-over to the sibling edge2 holding the router, CoA-ACK in 114.8 ms, router log "Radius
+  CoA succeeded". The login first failed twice with "RADIUS server is not responding": the
+  backend answered in about 4 s and RouterOS applies a separate radsec-timeout of 3.3 s;
+  raised to 10 s on the entry for the window.
+- **The router moving to the other edge mid-session** (08:01 to 08:03). The relay retargeted
+  from edge2 to edge1; the router's connection dropped and RouterOS reconnects only when it
+  next needs RADIUS, so a CoA sent in that gap found no router anywhere and was answered 502
+  after the walk (expected). A Disconnect at 08:02 found it back on edge1, Disconnect-ACK in
+  91 ms, router "logged out: radius disconnect". Logged in again on edge1: edge1 added the
+  same value as edge2 had (951c2f8e5f067c4d), CoA straight down edge1, CoA-ACK in 219 ms.
+- **The router as a udp NAS behind the Mac edge** (08:04 to 08:07). Router entry switched to
+  udp towards the Mac edge, Mac edge registered at the hub for the realm. CoA: hub walked the
+  two lab edges (502 at once each), then the Mac edge, udp to the router's 3799, CoA-ACK in
+  133.8 ms; Disconnect-ACK in 139.4 ms, user logged out. The first attempt took 30.9 s because
+  the stage-6 edge was registered at the hub again and silent; stopped, repeated.
+- **Restored** (08:08). Router: the lab entries, certificates and files removed, the SmartCity
+  entry enabled, backups kept. Mac: edge and relays stopped, certificate copies wiped.
+
 ## Reproducing
 
 Build the image or the binary from the branch tip; two instances from `examples/reverse-coa/
