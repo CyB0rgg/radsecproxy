@@ -315,6 +315,67 @@ the edge added `951c2f8e5f067c4d` (NAS-Identifier `OCC-IronWifi-MT-Test`). Times
 - **Disconnect** (20:31:47). Hand-over, Disconnect-ACK 112.4 ms, "logged out: radius
   disconnect", the Accounting-Stop up through edge2 to the hub.
 
+## 4 November, late evening: the second review's fixes, on the bench
+
+The full series went through a cold multi-agent review and came back with ten findings
+(three of them pre-existing on the base branch, one of those documentation only, one out of
+scope). The fixes: the reverse CoA state under its own mutex so no thread holding the global
+or a block lock ever waits on a connection's I/O lock; a client torn down with requests in
+flight hands them to the expiry path at once; an answer that matches nothing in flight is
+dropped before decoding instead of closing a tls client's connection; the duplicate-cache
+purge no longer detaches the originating client from a request still in flight; a request to
+a udp or dtls NAS is sent again every 5 s until answered or expired; an address string copied
+under the lock in the shared-value warning. 551 unit tests (20 new) on the Mac, on the build
+host (normal and AddressSanitizer) and inside the edge image build. The same hub and two
+edges, both edges and the hub on the fixed build; a udp client block `dead-nas` at
+192.0.2.250 (TEST-NET-1, nothing answers) on both edges for the runs that need a request to
+sit. Times UTC, run directories `/root/bench-ono/f1..f9-*` on the hub host.
+
+- **Smoke** (21:30:05, unknown NAS on the edges). 403 relayed in 1.7 ms. The first attempt
+  seven seconds after the edges restarted went to a third `lab-edge` connection, the stage-6
+  edge still running from October, which ignores reverse CoA: 30 s on it, then the next
+  candidate. Stopped for the rest of the runs, as the 3 November note says to.
+- **Resend to a udp NAS** (21:30:33, tcpdump on the edge host). The edge sent the request at
+  0, 5, 10, 15, 20, 25 and 30 s, seven datagrams on the wire, 502 at 31 s; the hub, with the
+  same 30 s on its edge block, had moved the request to the other edge in the same second
+  and its 502 came at 62 s, after the probe's 40 s. The late 502 from the first edge was
+  caught by the response path: "no pending reverse coa request ... ignoring", both edge
+  connections kept.
+- **Late answers with the hub timer shorter than the edges'** (21:33:24, hub edge block at
+  10 s). 502 to the probe at 22.3 s after both edges were tried; the edges' own 502s arrived
+  at 31 and 42 s and were dropped in `radsrv` before decoding ("answers no reverse coa
+  request in flight, ignoring"); both connections kept the same ports; a smoke probe after
+  them answered in 2.6 ms. On the base branch that late answer closes the edge's connection.
+- **Teardown while parked** (21:34:41). Request parked on edge1, edge1's container restarted
+  at +5 s: the hub logged "went away with reverse coa request id 2 in flight", sent the
+  request to edge2 in the same second, and the probe got its 502 at 17.3 s, the hub's own 10 s
+  timer on edge2 plus the 5 s. Before the fix the request was freed and the originator heard
+  nothing until the dedup window passed.
+- **Dup-cache purge while parked** (21:38:41, `DuplicateInterval 10` on the originating
+  client). Two requests from one socket: A parked at the dead NAS, B 15 s later for an
+  unknown NAS. B answered 403 in 2.1 ms and purged A's cache entry; A still got its 502 at
+  22.0 s. Before the fix the purge cleared A's client pointer and the 502 was dropped as
+  "client gone".
+- **Mixed load** (21:40:35). 120 requests at one per 0.7 s for an unknown NAS while 20
+  requests parked on the dead NAS with their resends and walks: 120 of 120 answered 403
+  (1.3 to 41.3 ms), all 20 parked requests answered 502, 40 late answers dropped, no error
+  line, RSS 9888 KB before and 9944 KB after the expiries, 24 threads throughout, both edge
+  connections unchanged.
+- **AddressSanitizer** (21:49:48, hub on the ASan build with SIGTERM turned into `exit()` so
+  the leak checker runs). Smoke 3.2 ms, the two-edge walk 62.5 s, teardown hand-over
+  ("went away ... in flight", 502 at 37.3 s), 30 of 30 under load, late answers dropped;
+  exit through the handler, no sanitizer or leak report. A control program with a 64-byte leak
+  built the same way does report, so the silence is a result.
+- **Restored** (21:55). Hub configuration back to its normal timeouts and the 255 s duplicate
+  interval; the edges back to their configurations without `dead-nas`, on the fixed image;
+  the stage-6 edge started again; a smoke probe through the restored edges answered in
+  3.7 ms (502: with no NAS registered at an edge the realm is not served there).
+
+Not run on this build: the router sessions (the RadSec and udp NAS runs of 4 November
+afternoon and evening). The code paths they exercise beyond the above are the NAS's own ACK
+on a real connection and the hand-over to the edge holding it; both ran unchanged in the unit
+tests, and the ACK path on a live connection is the next thing to repeat.
+
 ## Reproducing
 
 Build the image or the binary from the branch tip; two instances from `examples/reverse-coa/
