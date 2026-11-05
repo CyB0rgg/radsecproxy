@@ -1,0 +1,592 @@
+Making check in tests
+/Applications/Xcode.app/Contents/Developer/usr/bin/make  t_find_client t_fticks t_rewrite t_resizeattr t_rewrite_config t_tls_config t_verify_cert t_radmsg t_radmsg_crypto t_unhex t_utf8 t_verify_eap t_coa t_reverse_coa
+gcc -std=gnu23 -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2  -L/opt/local/libexec/openssl3/lib  -L/opt/local/lib -o t_find_client t_find_client.o ../librsp.a -lssl -lcrypto -lresolv 
+gcc -std=gnu23 -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2  -L/opt/local/libexec/openssl3/lib  -L/opt/local/lib -o t_fticks t_fticks.o ../librsp.a -lssl -lcrypto -lresolv 
+gcc -std=gnu23 -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2  -L/opt/local/libexec/openssl3/lib  -L/opt/local/lib -o t_rewrite t_rewrite.o ../librsp.a -lssl -lcrypto -lresolv 
+gcc -std=gnu23 -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2  -L/opt/local/libexec/openssl3/lib  -L/opt/local/lib -o t_resizeattr t_resizeattr.o ../librsp.a -lssl -lcrypto -lresolv 
+gcc -std=gnu23 -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2  -L/opt/local/libexec/openssl3/lib  -L/opt/local/lib -o t_rewrite_config t_rewrite_config.o ../librsp.a -lssl -lcrypto -lresolv 
+gcc -std=gnu23 -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2  -L/opt/local/libexec/openssl3/lib  -L/opt/local/lib -o t_tls_config t_tls_config.o ../librsp.a -lssl -lcrypto -lresolv 
+gcc -std=gnu23 -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2  -L/opt/local/libexec/openssl3/lib  -L/opt/local/lib -o t_verify_cert t_verify_cert.o ../librsp.a -lssl -lcrypto -lresolv 
+gcc -std=gnu23 -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2  -L/opt/local/libexec/openssl3/lib  -L/opt/local/lib -o t_radmsg t_radmsg.o ../librsp.a -lssl -lcrypto -lresolv 
+gcc -std=gnu23 -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2  -L/opt/local/libexec/openssl3/lib  -L/opt/local/lib -o t_radmsg_crypto t_radmsg_crypto.o ../librsp.a -lssl -lcrypto -lresolv 
+gcc -std=gnu23 -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2  -L/opt/local/libexec/openssl3/lib  -L/opt/local/lib -o t_unhex t_unhex.o ../librsp.a -lssl -lcrypto -lresolv 
+gcc -std=gnu23 -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2  -L/opt/local/libexec/openssl3/lib  -L/opt/local/lib -o t_utf8 t_utf8.o ../librsp.a -lssl -lcrypto -lresolv 
+gcc -std=gnu23 -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2  -L/opt/local/libexec/openssl3/lib  -L/opt/local/lib -o t_verify_eap t_verify_eap.o ../librsp.a -lssl -lcrypto -lresolv 
+gcc -std=gnu23 -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2  -L/opt/local/libexec/openssl3/lib  -L/opt/local/lib -o t_coa t_coa.o ../librsp.a -lssl -lcrypto -lresolv 
+gcc -std=gnu23 -DPACKAGE_NAME=\"radsecproxy\" -DPACKAGE_TARNAME=\"radsecproxy\" -DPACKAGE_VERSION=\"1.12.0-dev\" -DPACKAGE_STRING=\"radsecproxy\ 1.12.0-dev\" -DPACKAGE_BUGREPORT=\"https://radsecproxy.github.io\" -DPACKAGE_URL=\"\" -DPACKAGE=\"radsecproxy\" -DVERSION=\"1.12.0-dev\" -DHAVE_LIBRESOLV=1 -I.   -I/opt/local/include -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2 -MT t_reverse_coa.o -MD -MP -MF .deps/t_reverse_coa.Tpo -c -o t_reverse_coa.o t_reverse_coa.c
+mv -f .deps/t_reverse_coa.Tpo .deps/t_reverse_coa.Po
+gcc -std=gnu23 -g -Wall -Werror -I/opt/local/libexec/openssl3/include -D__APPLE_USE_RFC_3542 -Wno-deprecated-declarations -Wall -pedantic -Wno-long-long -pthread -DRADPROT_UDP -DRADPROT_TCP -DRADPROT_TLS -DRADPROT_DTLS -g -O2  -L/opt/local/libexec/openssl3/lib  -L/opt/local/lib -o t_reverse_coa t_reverse_coa.o ../librsp.a -lssl -lcrypto -lresolv 
+/Applications/Xcode.app/Contents/Developer/usr/bin/make  check-TESTS
+PASS: t_find_client 1 - simple client found
+PASS: t_find_client 2 - simple client not found
+PASS: t_find_client 3 - simple client not found wrong AF
+PASS: t_find_client 4 - simple client not found wrong type
+PASS: t_find_client 5 - two clients, first
+PASS: t_find_client 6 - two clients, second
+PASS: t_find_client 7 - two clients wrong AF
+PASS: t_find_client 8 - two identical clients, first
+PASS: t_find_client 9 - two identical clients, second
+PASS: t_find_client 10 - two identical clients, third
+PASS: t_find_client 11 - client two addresses, first
+PASS: t_find_client 12 - client two addresses, first address
+PASS: t_find_client 13 - client two addresses, first end
+PASS: t_find_client 14 - client two addresses, second
+PASS: t_find_client 15 - client two addresses, second address
+PASS: t_find_client 16 - client two addresses, second end
+PASS: t_find_client 17 - client with prefix, first address
+PASS: t_find_client 18 - client with prefix, second address
+PASS: t_find_client 19 - address and prefix, first address
+PASS: t_find_client 20 - address and prefix, first address
+PASS: t_find_client 21 - address and prefix, prefix
+PASS: t_find_client 22 - address and prefix, prefix
+PASS: t_find_client 23 - address and prefix, wildcard
+PASS: t_find_client 24 - address and prefix, wildcard
+PASS: t_find_client 25 - address and prefix, end
+PASS: t_find_client 26 - address and prefix, IPv6 wildcard
+PASS: t_find_client 27 - address and prefix, IPv6 wildcard
+PASS: t_find_client 28 - address and prefix, IPv6 wildcard end
+PASS: t_fticks 1 - basic hash
+PASS: t_fticks 2 - hash stateless
+PASS: t_fticks 3 - hash uppercase
+PASS: t_fticks 4 - hash appended
+PASS: t_fticks 5 - hash weird
+PASS: t_rewrite 1 - empty rewrite
+PASS: t_rewrite 2 - removeattrs
+PASS: t_rewrite 3 - removevendorattrs full
+PASS: t_rewrite 4 - removevendorattrs last element
+PASS: t_rewrite 5 - removevendorattrs non-rfc
+PASS: t_rewrite 6 - removevendorattrs sub-attribute
+PASS: t_rewrite 7 - addattribute simple
+PASS: t_rewrite 8 - addattribute with existing attributes
+PASS: t_rewrite 9 - addattribute null
+PASS: t_rewrite 10 - addattribute too big
+PASS: t_rewrite 11 - suppattrs non existing
+PASS: t_rewrite 12 - suppattrs existing
+PASS: t_rewrite 13 - suppattrs vendor
+PASS: t_rewrite 14 - modify attribute no match
+PASS: t_rewrite 15 - modify attribute match full replace
+PASS: t_rewrite 16 - modify attribute match full replace
+PASS: t_rewrite 17 - modify attribute max length
+PASS: t_rewrite 18 - modify attribute too long
+PASS: t_rewrite 19 - modify attribute regex replace
+PASS: t_rewrite 20 - modify vendor
+PASS: t_rewrite 21 - modify vendor too long
+PASS: t_rewrite 22 - modify vendor too short
+PASS: t_rewrite 23 - whitelistattrs
+PASS: t_rewrite 24 - whitelistvendorattrs
+PASS: t_rewrite 25 - whitelistvendorattrs
+PASS: t_rewrite 26 - whitelistvendorattrs
+PASS: t_rewrite 27 - issue #62
+PASS: t_resizeattr 1 - resizeattr
+PASS: t_resizeattr 2 - resizeattr to zero
+PASS: t_resizeattr 3 - resizeattr to max size
+PASS: t_resizeattr 4 - resizeattr to oversize
+PASS: t_resizeattr 5 - resizeattr to oversize with overflow
+PASS: t_rewrite_config 1 - rewrite config
+PASS: t_rewrite_config 2 - rewrite config issue #62
+PASS: t_tls_config 1 - all versions tls
+PASS: t_tls_config 2 - all versions dtls
+PASS: t_tls_config 3 - test empty string
+PASS: t_tls_config 4 - max TLS1.2
+PASS: t_tls_config 5 - min TLS1.2
+PASS: t_tls_config 6 - TLS1.1 to TLS1.2
+PASS: t_tls_config 7 - TLS1.2 to TLS1.1
+PASS: t_tls_config 8 - exact TLS1.2
+PASS: t_tls_config 9 - illegal version foo
+PASS: t_tls_config 10 - max DTLS1.2
+PASS: t_tls_config 11 - min DTLS1.2
+PASS: t_tls_config 12 - DTLS1 to DTLS1.2
+PASS: t_tls_config 13 - DTLS1.2 to DTLS1
+PASS: t_tls_config 14 - exact TLS1.2
+PASS: t_tls_config 15 - DTLS illegal version TLS1.2
+PASS: t_verify_cert 1 - check disabled
+PASS: t_verify_cert 2 - cidr prefix no SAN IP
+PASS: t_verify_cert 3 - cidr prefix SAN IP match
+PASS: t_verify_cert 4 - cidr prefix SAN IP no match
+PASS: t_verify_cert 5 - no connection address given
+PASS: t_verify_cert 6 - simple cert cn legacy
+PASS: t_verify_cert 7 - simple cert cn
+PASS: t_verify_cert 8 - negative simple cert cn
+PASS: t_verify_cert 9 - simple cert cn vs san dns, RFC6125
+PASS: t_verify_cert 10 - san ip
+PASS: t_verify_cert 11 - wrong san ip
+PASS: t_verify_cert 12 - negative san ip
+PASS: t_verify_cert 13 - san ip in dns
+PASS: t_verify_cert 14 - san ip in complex cert
+PASS: t_verify_cert 15 - san ipv6
+PASS: t_verify_cert 16 - wrong san ipv6
+PASS: t_verify_cert 17 - negative san ipv6
+PASS: t_verify_cert 18 - san ipv6 in dns
+PASS: t_verify_cert 19 - san ipv6 in complex cert
+PASS: t_verify_cert 20 - san dns
+PASS: t_verify_cert 21 - negative san dns
+PASS: t_verify_cert 22 - san dns in complex cert
+PASS: t_verify_cert 23 - missing san dns
+PASS: t_verify_cert 24 - CN upper case legacy
+PASS: t_verify_cert 25 - CN upper case
+PASS: t_verify_cert 26 - san dns upper case
+PASS: t_verify_cert 27 - san dns wildcard
+PASS: t_verify_cert 28 - wrong san dns partial wildcard
+PASS: t_verify_cert 29 - wrong san dns wildcard base
+PASS: t_verify_cert 30 - wrong san dns wildcard subsubdomain
+PASS: t_verify_cert 31 - wrong san dns multiple wildcard
+PASS: t_verify_cert 32 - multi hostport explicit wrong cert
+PASS: t_verify_cert 33 - multi hostport explicit matching cert
+PASS: t_verify_cert 34 - multi hostport explicit wrong complex cert
+PASS: t_verify_cert 35 - multi hostport explicit matching complex cert
+PASS: t_verify_cert 36 - explicit cn regex config
+PASS: t_verify_cert 37 - explicit cn regex
+PASS: t_verify_cert 38 - negative explicit cn regex
+PASS: t_verify_cert 39 - explicit cn regex with SAN DNS
+PASS: t_verify_cert 40 - explicit san ip config
+PASS: t_verify_cert 41 - explicit san ip
+PASS: t_verify_cert 42 - wrong explicit san ip
+PASS: t_verify_cert 43 - missing explicit san ip
+PASS: t_verify_cert 44 - explicit san ip in complex cert
+PASS: t_verify_cert 45 - explicit san ipv6 config
+PASS: t_verify_cert 46 - explicit san ipv6
+PASS: t_verify_cert 47 - wrong explicit san ipv6
+PASS: t_verify_cert 48 - missing explicitsan ipv6
+PASS: t_verify_cert 49 - explicit san ipv6 in complex cert
+PASS: t_verify_cert 50 - explicit san dns regex config
+PASS: t_verify_cert 51 - explicit san dns
+PASS: t_verify_cert 52 - negative explicit san dns
+PASS: t_verify_cert 53 - missing explicit san dns
+PASS: t_verify_cert 54 - explicit san dns in complex cert
+PASS: t_verify_cert 55 - explicit cn regex config
+PASS: t_verify_cert 56 - explicit san uri regex
+PASS: t_verify_cert 57 - negative explicit san uri
+PASS: t_verify_cert 58 - missing explicit san uri
+PASS: t_verify_cert 59 - explicit san rid config
+PASS: t_verify_cert 60 - explicit san rid
+PASS: t_verify_cert 61 - negative explicit san rid
+PASS: t_verify_cert 62 - missing explicit san rid
+PASS: t_verify_cert 63 - explicit san otherName config
+PASS: t_verify_cert 64 - explicit san otherName
+PASS: t_verify_cert 65 - negative explicit san otherName
+PASS: t_verify_cert 66 - missing explicit san otherName
+PASS: t_verify_cert 67 - test regex config syntax
+PASS: t_verify_cert 68 - test regex config syntax execution
+PASS: t_verify_cert 69 - test invalid syntax regex
+PASS: t_verify_cert 70 - test invalid syntax attribute
+PASS: t_verify_cert 71 - test invalid syntax ip
+PASS: t_verify_cert 72 - test invalid syntax ipv6
+PASS: t_verify_cert 73 - test invalid syntax rID
+PASS: t_verify_cert 74 - combined config
+PASS: t_verify_cert 75 - combined san dns
+PASS: t_verify_cert 76 - negative combined san dns
+PASS: t_verify_cert 77 - combined san dns in complex cert
+PASS: t_verify_cert 78 - combined missing san dns
+PASS: t_verify_cert 79 - multiple check 1
+PASS: t_verify_cert 80 - multiple check 2
+PASS: t_verify_cert 81 - multiple missing rID
+PASS: t_verify_cert 82 - multiple missing DNS
+PASS: t_verify_cert 83 - multiple SANs
+PASS: t_verify_cert 84 - multiple negative match
+PASS: t_verify_cert 85 - multiple missing rID in complex cert
+PASS: t_verify_cert 86 - multiple missing everything
+PASS: t_verify_cert 87 - dynamic NAI realm
+PASS: t_verify_cert 88 - negative dynamic NAI realm
+PASS: t_verify_cert 89 - negative dynamic NAI sub-realm
+PASS: t_verify_cert 90 - dynamic NAI realm wildcard
+PASS: t_verify_cert 91 - dynamic NAI realm wildcard subrealm
+PASS: t_verify_cert 92 - dynamic NAI realm illegal
+PASS: t_verify_cert 93 - dynamic NAI realm multi
+PASS: t_verify_cert 94 - dynamic NAI realm multi wildcard
+PASS: t_verify_cert 95 - dynamic NAI realm short
+PASS: t_verify_cert 96 - dynamic NAI realm short illegal subrealm
+PASS: t_verify_cert 97 - dynamic NAI realm short illegal
+PASS: t_verify_cert 98 - non-NAI realm and DNS
+PASS: t_verify_cert 99 - negative NAI realm match in SANDNS
+PASS: t_verify_cert 100 - match DNS even if NAIrealm fails
+PASS: t_verify_cert 101 - match NAIrealm even if DNS fails
+PASS: t_radmsg 1 - radlen basic length test (expected 42, got 42)
+PASS: t_radmsg 2 - radlen lower bound (expected 20, got 20)
+PASS: t_radmsg 3 - radlen upper bound (expected 4096, got 4096)
+PASS: t_radmsg 4 - radlen too small (expected -19, got -19)
+PASS: t_radmsg 5 - radlen too big (expected -4097, got -4097)
+PASS: t_radmsg 6 - radlen zero (expected 0, got 0)
+PASS: t_radmsg_crypto 1 - short password
+PASS: t_radmsg_crypto 2 - long password
+PASS: t_radmsg_crypto 3 - password with salt
+PASS: t_radmsg_crypto 4 - passowrd too short
+PASS: t_radmsg_crypto 5 - wrongly include salt in buffer
+PASS: t_radmsg_crypto 6 - status-server radmsgsign
+PASS: t_radmsg_crypto 7 - accounting-request radmsgsign
+PASS: t_radmsg_crypto 8 - access-accept radmsgsign
+PASS: t_radmsg_crypto 9 - non-password attribute
+PASS: t_radmsg_crypto 10 - valid user-password
+PASS: t_radmsg_crypto 11 - user-password too short
+PASS: t_radmsg_crypto 12 - zero-lenght user-password
+PASS: t_radmsg_crypto 13 - user-password too long
+PASS: t_radmsg_crypto 14 - user-password not multiple of 16
+PASS: t_radmsg_crypto 15 - valid tunnel-password
+PASS: t_radmsg_crypto 16 - tunnel-password missing tag
+PASS: t_radmsg_crypto 17 - tunnel-password missing salt
+PASS: t_radmsg_crypto 18 - tunnel-password odd length
+PASS: t_radmsg_crypto 19 - valid long tunnel-password
+PASS: t_radmsg_crypto 20 - vendor-specific non-microsoft
+PASS: t_radmsg_crypto 21 - vendor-specific microsoft not mppe
+PASS: t_radmsg_crypto 22 - vendor-specific microsoft mppe 16
+PASS: t_radmsg_crypto 23 - vendor-specific microsoft mppe 17
+PASS: t_radmsg_crypto 24 - vendor-specific microsoft mppe too short
+PASS: t_radmsg_crypto 25 - vendor-specific microsoft mppe missing salt
+PASS: t_radmsg_crypto 26 - vendor-specific microsoft mppe odd length
+PASS: t_unhex 1 - simple test with no hex
+PASS: t_unhex 2 - simple hex
+PASS: t_unhex 3 - simple hex with following char
+PASS: t_unhex 4 - two hex
+PASS: t_unhex 5 - two hex with flollowing char
+PASS: t_unhex 6 - two hex with flollowing char
+PASS: t_unhex 7 - not hex
+PASS: t_unhex 8 - not hex 2
+PASS: t_unhex 9 - too short
+PASS: t_unhex 10 - not hex
+PASS: t_unhex 11 - start hex
+PASS: t_unhex 12 - start hex with following char
+PASS: t_unhex 13 - skip zero
+PASS: t_unhex 14 - convert zero
+PASS: t_unhex 15 - hex zero length
+PASS: t_unhex 16 - hexstring zero length
+PASS: t_unhex 17 - hexstring length one
+PASS: t_unhex 18 - hexstring length two
+PASS: t_unhex 19 - hexstring long
+PASS: t_unhex 20 - hexstring leader and trailer
+PASS: t_unhex 21 - hexstring terminate
+PASS: t_unhex 22 - hexstring terminate
+PASS: t_unhex 23 - hexstring two strings
+PASS: t_unhex 24 - hexstring two strings no ascii
+PASS: t_unhex 25 - hexstring zeroes
+PASS: t_unhex 26 - hexstring and hexchar mixed
+PASS: t_utf8 1 - simple test ascii
+PASS: t_utf8 2 - original utf8 string
+PASS: t_utf8 3 - simple test null char
+PASS: t_utf8 4 - control characters first
+PASS: t_utf8 5 - control characters last
+PASS: t_utf8 6 - delete
+PASS: t_utf8 7 - invalid 2nd char
+PASS: t_utf8 8 - invalid 3rd char
+PASS: t_utf8 9 - invalid 4th char
+PASS: t_utf8 10 - invalid continuation single byte
+PASS: t_utf8 11 - invalid byte
+PASS: t_utf8 12 - 2-byte char first codepoint
+PASS: t_utf8 13 - 2-byte char last codepoint
+PASS: t_utf8 14 - overlong 1-byte
+PASS: t_utf8 15 - 2-byte control first
+PASS: t_utf8 16 - 2-byte control last
+PASS: t_utf8 17 - 3-byte char first codepoint
+PASS: t_utf8 18 - 3-byte char last codepoint
+PASS: t_utf8 19 - 3-byte char invalid 1
+PASS: t_utf8 20 - 3-byte char invalid 2
+PASS: t_utf8 21 - 4-byte char first codepoint
+PASS: t_utf8 22 - 4-byte char first codepoint
+PASS: t_utf8 23 - 4-byte char invalid 1
+PASS: t_utf8 24 - 4-byte char invalid 2
+PASS: t_utf8 25 - 4-byte char invalid 3
+PASS: t_utf8 26 - 4-byte char all ones
+PASS: t_utf8 27 - 2-byte char too short
+PASS: t_utf8 28 - 2-byte char too long
+PASS: t_utf8 29 - invalid after 2-byte char
+PASS: t_utf8 30 - 4-byte char invalid continuation 2nd byte
+PASS: t_utf8 31 - 4-byte char invalid continuation 3rd byte
+PASS: t_utf8 32 - 4-byte char invalid continuation 4th byte
+PASS: t_utf8 33 - long string
+PASS: t_verify_eap 1 - simple eap
+PASS: t_verify_eap 2 - minimum length
+PASS: t_verify_eap 3 - too short
+PASS: t_verify_eap 4 - maxxed out attribute
+PASS: t_verify_eap 5 - mimimum overflow
+PASS: t_verify_eap 6 - eap length too short (all zero)
+PASS: t_verify_eap 7 - eap length too short - very long eap
+PASS: t_verify_eap 8 - eap length too big
+PASS: t_verify_eap 9 - eap length too big - very long eap
+PASS: t_verify_eap 10 - zero length second attribute
+PASS: t_coa 1 - no operator-name
+PASS: t_coa 2 - namespace 0 whole value
+PASS: t_coa 3 - namespace 4 whole value
+PASS: t_coa 4 - namespace byte only
+PASS: t_coa 5 - namespace 1 realm
+PASS: t_coa 6 - first instance wins
+PASS: t_coa 7 - empty instance skipped
+PASS: t_coa 8 - truncated to the buffer
+PASS: t_coa 9 - error-cause 502 network order
+PASS: t_coa 10 - error-cause 403 network order
+PASS: t_coa 11 - disconnect-request pairs disconnect-nak
+PASS: t_coa 12 - coa-request pairs coa-nak
+PASS: t_coa 13 - current timestamp fresh
+PASS: t_coa 14 - old timestamp stale
+PASS: t_coa 15 - absent timestamp fresh
+PASS: t_coa 16 - malformed timestamp fresh
+PASS: t_coa 17 - nas-identifier selects the nas
+PASS: t_coa 18 - no mismatch on a hit (expected 0, got 0)
+PASS: t_coa 19 - unknown nas-identifier no server
+PASS: t_coa 20 - unknown nas-identifier mismatch (expected 1, got 1)
+PASS: t_coa 21 - no nas attributes first server
+PASS: t_coa 22 - user-name is no routing key
+PASS: t_coa 23 - unknown realm
+PASS: t_coa 24 - nas-ip-address selects the nas
+PASS: t_coa 25 - empty realm no server
+PASS: t_coa 26 - empty realm no mismatch
+PASS: t_coa 27 - proxies ignore nas attributes
+PASS: t_coa 28 - first operator-nas-identifier only
+PASS: t_coa 29 - malformed nas-ip-address absent
+PASS: t_coa 30 - empty nas-identifier absent
+PASS: t_coa 31 - failing nas skipped
+PASS: t_coa 32 - parent realm, not the subrealm
+PASS: t_coa 33 - addrealm plain name
+PASS: t_coa 34 - plain name matched
+PASS: t_coa 35 - nothing required by default
+PASS: t_coa 36 - access-request on udp required
+PASS: t_coa 37 - coa-request not required
+PASS: t_coa 38 - disconnect-request not required
+PASS: t_coa 39 - access-request on tcp required
+PASS: t_coa 40 - coa-request on tcp not required
+PASS: t_coa 41 - ignored on tls
+PASS: t_coa 42 - proxy flag without proxy-state not required
+PASS: t_coa 43 - proxy flag with proxy-state required
+PASS: t_coa 44 - coa-request with proxy-state not required
+PASS: t_coa 45 - coa-request tunnel-password reencrypted (expected 1, got 1)
+PASS: t_coa 46 - coa-request tunnel-password readable at the next hop
+PASS: t_coa 47 - disconnect-request tunnel-password reencrypted (expected 1, got 1)
+PASS: t_coa 48 - disconnect-request tunnel-password readable at the next hop
+PASS: t_coa 49 - coa-request parses
+PASS: t_coa 50 - message-authenticator validates
+PASS: t_coa 51 - corrupted message-authenticator invalid
+PASS: t_coa 52 - coa-request encodes
+PASS: t_coa 53 - request authenticator as accounting
+PASS: t_coa 54 - request authenticator copied back
+PASS: t_coa 55 - coa-nak encodes
+PASS: t_coa 56 - response authenticator over the request authenticator
+PASS: t_reverse_coa 1 - correct authenticator
+PASS: t_reverse_coa 2 - wrong request authenticator
+PASS: t_reverse_coa 3 - short
+PASS: t_reverse_coa 4 - declared length used
+PASS: t_reverse_coa 5 - trailing bytes fail
+PASS: t_reverse_coa 6 - with attribute
+PASS: t_reverse_coa 7 - response matched
+PASS: t_reverse_coa 8 - wrong socket
+PASS: t_reverse_coa 9 - wrong source
+PASS: t_reverse_coa 10 - other request authenticator
+PASS: t_reverse_coa 11 - nothing pending for the id
+PASS: t_reverse_coa 12 - token length
+PASS: t_reverse_coa 13 - tokens differ
+PASS: t_reverse_coa 14 - token as attribute 241.8
+PASS: t_reverse_coa 15 - token parses
+PASS: t_reverse_coa 16 - foreign identifier rejected
+PASS: t_reverse_coa 17 - missing attribute rejected
+PASS: t_reverse_coa 18 - keyed token length
+PASS: t_reverse_coa 19 - keyed token is the same for the same identity
+PASS: t_reverse_coa 20 - keyed token differs per identity
+PASS: t_reverse_coa 21 - the peer address is part of the keyed token
+PASS: t_reverse_coa 22 - same identity and address, same token
+PASS: t_reverse_coa 23 - one certificate from two addresses, two tokens
+PASS: t_reverse_coa 24 - nas token length
+PASS: t_reverse_coa 25 - same nas from another address, same token
+PASS: t_reverse_coa 26 - the address is not part of it
+PASS: t_reverse_coa 27 - another nas on the certificate, another token
+PASS: t_reverse_coa 28 - same nas-identifier on another certificate, another token
+PASS: t_reverse_coa 29 - no nas-identifier: the nas address instead
+PASS: t_reverse_coa 30 - the nas address from another peer address, same token
+PASS: t_reverse_coa 31 - neither: the peer address, as before the first request
+PASS: t_reverse_coa 32 - keyed token differs per key
+PASS: t_reverse_coa 33 - no identity gives a random token
+PASS: t_reverse_coa 34 - without a key the token is random
+PASS: t_reverse_coa 35 - no key: the value does not change with requests
+PASS: t_reverse_coa 36 - udp: the value follows the address, not the nas-identifier
+PASS: t_reverse_coa 37 - and differs from the nas-identifier's
+PASS: t_reverse_coa 38 - operator-name stripped
+PASS: t_reverse_coa 39 - operator-nas-identifier stripped
+PASS: t_reverse_coa 40 - other attributes kept
+PASS: t_reverse_coa 41 - nothing added without operator-name
+PASS: t_reverse_coa 42 - added next to operator-name
+PASS: t_reverse_coa 43 - no second operator-nas-identifier (expected 1, got 1)
+PASS: t_reverse_coa 44 - no address attribute
+PASS: t_reverse_coa 45 - nas-ipv6-address
+PASS: t_reverse_coa 46 - nas-ip-address preferred
+PASS: t_reverse_coa 47 - not named
+PASS: t_reverse_coa 48 - nas-ip-address on a v4-mapped client
+PASS: t_reverse_coa 49 - operator-nas-identifier
+PASS: t_reverse_coa 50 - realm values compiled
+PASS: t_reverse_coa 51 - compiled realm values freed
+PASS: t_reverse_coa 52 - invalid regexp rejected
+PASS: t_reverse_coa 53 - stale msgauth fails
+PASS: t_reverse_coa 54 - fresh msgauth verifies
+PASS: t_reverse_coa 55 - nothing sent
+PASS: t_reverse_coa 56 - nothing pending
+PASS: t_reverse_coa 57 - pending set
+PASS: t_reverse_coa 58 - an overdue request still counts until the sweep
+PASS: t_reverse_coa 59 - expired slot cleared by the sweep
+PASS: t_reverse_coa 60 - purged but kept while a reverse coa holds it
+PASS: t_reverse_coa 61 - teardown cleared the client pointer
+PASS: t_reverse_coa 62 - coa with a tunnel-password sent to the nas (expected 0, got 0)
+PASS: t_reverse_coa 63 - tunnel-password readable at the nas under the nas's secret
+PASS: t_reverse_coa 64 - client gone: not routed (expected 502, got 502)
+PASS: t_reverse_coa 65 - nothing sent to the nas for it
+PASS: t_reverse_coa 66 - literal realm (expected 0, got 0)
+PASS: t_reverse_coa 67 - case-insensitive match delivered
+PASS: t_reverse_coa 68 - regexp realm (expected 0, got 0)
+PASS: t_reverse_coa 69 - regexp match delivered
+PASS: t_reverse_coa 70 - nas not named 403 (expected 403, got 403)
+PASS: t_reverse_coa 71 - no nas identification at all 402 (expected 402, got 402)
+PASS: t_reverse_coa 72 - unknown realm 502 (expected 502, got 502)
+PASS: t_reverse_coa 73 - nothing queued
+PASS: t_reverse_coa 74 - unregister clears the target
+PASS: t_reverse_coa 75 - unregistered realm 502 (expected 502, got 502)
+PASS: t_reverse_coa 76 - literal and regexp realm (expected 0, got 0)
+PASS: t_reverse_coa 77 - literal value before a regexp registered first
+PASS: t_reverse_coa 78 - named nas (expected 0, got 0)
+PASS: t_reverse_coa 79 - signed for the client
+PASS: t_reverse_coa 80 - operator attributes removed
+PASS: t_reverse_coa 81 - nas-identifier kept
+PASS: t_reverse_coa 82 - answers to the server
+PASS: t_reverse_coa 83 - sent to the coa port
+PASS: t_reverse_coa 84 - nas-ip-address without operator-name (expected 0, got 0)
+PASS: t_reverse_coa 85 - delivered by address
+PASS: t_reverse_coa 86 - token names the connection (expected 0, got 0)
+PASS: t_reverse_coa 87 - delivered by token
+PASS: t_reverse_coa 88 - token without operator-name ignored (expected 502, got 502)
+PASS: t_reverse_coa 89 - shared token, second nas named (expected 0, got 0)
+PASS: t_reverse_coa 90 - delivered to the nas named
+PASS: t_reverse_coa 91 - not to the first connection with the token
+PASS: t_reverse_coa 92 - shared token, first nas named (expected 0, got 0)
+PASS: t_reverse_coa 93 - delivered to the first nas
+PASS: t_reverse_coa 94 - not to the second
+PASS: t_reverse_coa 95 - shared token, none named (expected 0, got 0)
+PASS: t_reverse_coa 96 - delivered to the connection that spoke last
+PASS: t_reverse_coa 97 - not to the older one
+PASS: t_reverse_coa 98 - shared token, the other one spoke last (expected 0, got 0)
+PASS: t_reverse_coa 99 - delivered to the newer connection
+PASS: t_reverse_coa 100 - not to the older one
+PASS: t_reverse_coa 101 - fleet block, nothing learned yet, nas not found (expected 403, got 403)
+PASS: t_reverse_coa 102 - a request sets the token from the nas-identifier, one per nas
+PASS: t_reverse_coa 103 - a request stamps the connection
+PASS: t_reverse_coa 104 - learned nas-identifier matches
+PASS: t_reverse_coa 105 - and not the other site, same lan address
+PASS: t_reverse_coa 106 - fleet block, nas named by learned nas-identifier (expected 0, got 0)
+PASS: t_reverse_coa 107 - delivered to site-b
+PASS: t_reverse_coa 108 - not to site-a
+PASS: t_reverse_coa 109 - fleet block, token names site-a (expected 0, got 0)
+PASS: t_reverse_coa 110 - delivered to site-a by token
+PASS: t_reverse_coa 111 - not to site-b
+PASS: t_reverse_coa 112 - same nas from a new address, same token
+PASS: t_reverse_coa 113 - token on two connections, none named (expected 0, got 0)
+PASS: t_reverse_coa 114 - delivered on the connection that spoke last
+PASS: t_reverse_coa 115 - named by the nas-identifier it sent, not the regexp
+PASS: t_reverse_coa 116 - not on the lingering one
+PASS: t_reverse_coa 117 - named by address only: the value added is the address's
+PASS: t_reverse_coa 118 - the nas-identifier's value still names the connection (expected 0, got 0)
+PASS: t_reverse_coa 119 - delivered by the earlier value
+PASS: t_reverse_coa 120 - the address's value names it too (expected 0, got 0)
+PASS: t_reverse_coa 121 - delivered by the later value
+PASS: t_reverse_coa 122 - fleet block, unknown nas is 403 (expected 403, got 403)
+PASS: t_reverse_coa 123 - fleet block, name outside the regexp is 403 (expected 403, got 403)
+PASS: t_reverse_coa 124 - nas not here, handed to the sibling (expected 0, got 0)
+PASS: t_reverse_coa 125 - operator attributes kept for the sibling
+PASS: t_reverse_coa 126 - the answer goes to the server
+PASS: t_reverse_coa 127 - not to the local nas
+PASS: t_reverse_coa 128 - from a sibling, nas not here: 403, not handed on (expected 403, got 403)
+PASS: t_reverse_coa 129 - nothing queued
+PASS: t_reverse_coa 130 - nas held here (expected 0, got 0)
+PASS: t_reverse_coa 131 - delivered here, not to the sibling
+PASS: t_reverse_coa 132 - realm not served here, handed to the sibling (expected 0, got 0)
+PASS: t_reverse_coa 133 - handed by realm
+PASS: t_reverse_coa 134 - from a sibling, realm not served: 502 (expected 502, got 502)
+PASS: t_reverse_coa 135 - from a sibling, nothing names a nas: 402 (expected 402, got 402)
+PASS: t_reverse_coa 136 - sent to the first proxy of the realm
+PASS: t_reverse_coa 137 - the first proxy has it
+PASS: t_reverse_coa 138 - 502 from the first proxy is not relayed
+PASS: t_reverse_coa 139 - the second proxy gets a fresh request for the same one
+PASS: t_reverse_coa 140 - retransmissions follow it
+PASS: t_reverse_coa 141 - the ack from the second proxy is relayed
+PASS: t_reverse_coa 142 - under the original id
+PASS: t_reverse_coa 143 - sent again (expected 0, got 0)
+PASS: t_reverse_coa 144 - 403 from a proxy relayed, not retried
+PASS: t_reverse_coa 145 - sent again (expected 0, got 0)
+PASS: t_reverse_coa 146 - retry on 403: the first 403 is not relayed
+PASS: t_reverse_coa 147 - the second proxy of the realm gets a fresh request for the same one
+PASS: t_reverse_coa 148 - the last 403 is relayed
+PASS: t_reverse_coa 149 - sent again (expected 0, got 0)
+PASS: t_reverse_coa 150 - 503 relayed, not retried
+PASS: t_reverse_coa 151 - sent again (expected 0, got 0)
+PASS: t_reverse_coa 152 - first 502 not relayed
+PASS: t_reverse_coa 153 - last 502 relayed
+PASS: t_reverse_coa 154 - handed to the first sibling (expected 0, got 0)
+PASS: t_reverse_coa 155 - the first sibling has it
+PASS: t_reverse_coa 156 - 403 from the first sibling not relayed
+PASS: t_reverse_coa 157 - the second sibling gets it
+PASS: t_reverse_coa 158 - the second sibling's ack relayed
+PASS: t_reverse_coa 159 - sent to the first proxy
+PASS: t_reverse_coa 160 - the first proxy has it
+PASS: t_reverse_coa 161 - at expiry the second proxy gets a fresh request, nothing relayed
+PASS: t_reverse_coa 162 - retransmissions follow it
+PASS: t_reverse_coa 163 - no candidate left: answered
+PASS: t_reverse_coa 164 - with a nak under the original id
+PASS: t_reverse_coa 165 - error-cause 502
+PASS: t_reverse_coa 166 - the nak is cached for a retransmission
+PASS: t_reverse_coa 167 - sent to the first proxy
+PASS: t_reverse_coa 168 - the first proxy has it
+PASS: t_reverse_coa 169 - torn down: nothing left in flight to it
+PASS: t_reverse_coa 170 - the second proxy gets it at once, nothing relayed
+PASS: t_reverse_coa 171 - retransmissions follow it
+PASS: t_reverse_coa 172 - the last one torn down: answered
+PASS: t_reverse_coa 173 - with a nak under the original id
+PASS: t_reverse_coa 174 - error-cause 502
+PASS: t_reverse_coa 175 - the nak is cached for a retransmission
+PASS: t_reverse_coa 176 - nothing in flight: nothing to abandon
+PASS: t_reverse_coa 177 - sent to the udp nas (expected 0, got 0)
+PASS: t_reverse_coa 178 - one try so far
+PASS: t_reverse_coa 179 - not sent again within 5 s
+PASS: t_reverse_coa 180 - sent again after 5 s, the same packet, once
+PASS: t_reverse_coa 181 - not again before another 5 s
+PASS: t_reverse_coa 182 - third try after 10 s, nothing answered yet
+PASS: t_reverse_coa 183 - expired: not sent again, 502 to the server
+PASS: t_reverse_coa 184 - nak under the original id
+PASS: t_reverse_coa 185 - sent to the first proxy (expected 0, got 0)
+PASS: t_reverse_coa 186 - a tls proxy gets it once
+PASS: t_reverse_coa 187 - sent again (expected 0, got 0)
+PASS: t_reverse_coa 188 - retry off: 502 relayed
+PASS: t_reverse_coa 189 - sent to the twice-registered proxy (expected 0, got 0)
+PASS: t_reverse_coa 190 - it has the request
+PASS: t_reverse_coa 191 - its 502 is relayed, not sent back to it
+PASS: t_reverse_coa 192 - the value names the plain nas (expected 0, got 0)
+PASS: t_reverse_coa 193 - operator attributes stripped before the nas
+PASS: t_reverse_coa 194 - named by its address
+PASS: t_reverse_coa 195 - udp nas behind nat reached by its value (expected 0, got 0)
+PASS: t_reverse_coa 196 - delivered to the entry
+PASS: t_reverse_coa 197 - not back to the sender (expected 502, got 502)
+PASS: t_reverse_coa 198 - nothing queued for the sender
+PASS: t_reverse_coa 199 - client request without operator-name 502 (expected 502, got 502)
+PASS: t_reverse_coa 200 - nothing queued without operator-name
+PASS: t_reverse_coa 201 - request taken
+PASS: t_reverse_coa 202 - nak signed for the server
+PASS: t_reverse_coa 203 - error-cause 502
+PASS: t_reverse_coa 204 - slot holds the reply
+PASS: t_reverse_coa 205 - duplicate answered from the slot
+PASS: t_reverse_coa 206 - duplicate (expected 1, got 1)
+PASS: t_reverse_coa 207 - other authenticator is new (expected 0, got 0)
+PASS: t_reverse_coa 208 - expired slot cleared
+PASS: t_reverse_coa 209 - recorded without a reply
+PASS: t_reverse_coa 210 - duplicate while pending (expected 1, got 1)
+PASS: t_reverse_coa 211 - stale event-timestamp dropped
+PASS: t_reverse_coa 212 - current event-timestamp taken
+PASS: t_reverse_coa 213 - disconnect sent (expected 0, got 0)
+PASS: t_reverse_coa 214 - coa-ack does not answer a disconnect
+PASS: t_reverse_coa 215 - disconnect-ack answers
+PASS: t_reverse_coa 216 - relayed under the original id
+PASS: t_reverse_coa 217 - nothing pending for the id
+PASS: t_reverse_coa 218 - client request routed (expected 0, got 0)
+PASS: t_reverse_coa 219 - origin kept
+PASS: t_reverse_coa 220 - answered
+PASS: t_reverse_coa 221 - client request answered
+============================================================================
+Testsuite summary for radsecproxy 1.12.0-dev
+============================================================================
+# TOTAL: 561
+# PASS:  561
+# SKIP:  0
+# XFAIL: 0
+# FAIL:  0
+# XPASS: 0
+# ERROR: 0
+============================================================================
+make[1]: Nothing to be done for `check-am'.
