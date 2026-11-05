@@ -347,6 +347,7 @@ void freerq(struct request *rq);
 int checkttl(struct radmsg *msg, uint32_t *attrtype);
 int radsrv(struct request *rq);
 int msgauthrequired(const struct clsrvconf *conf, struct radmsg *msg);
+int recryptrequestattrs(struct radmsg *msg, struct clsrvconf *from, struct clsrvconf *to, uint8_t *rqauth);
 struct realm *newrealmref(struct realm *r);
 struct clsrvconf *choosesrvconf(struct list *srvconfs);
 int addserver(struct clsrvconf *conf, const char *dynamiclookuparg);
