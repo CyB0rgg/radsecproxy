@@ -44,3 +44,5 @@ tests/t_coa
 tests/t_reverse_coa
 tests/*.log
 tests/*.trs
+check.out
+make.err
