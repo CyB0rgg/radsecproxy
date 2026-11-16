@@ -524,6 +524,45 @@ Djxuj56ZZL9t3+OVveS6\n\
             ;
     }
 
+    /* /CN=Q000-0000-0001 issued by /CN=Cisco Meraki Dashboard Organization No. AB0001 (fictitious) */
+    X509 *certissued = getcert("-----BEGIN CERTIFICATE-----\n\
+MIIBmDCCAT6gAwIBAgIUdbizbRC4S+7bB5ge+Z3m3BFL3vEwCgYIKoZIzj0EAwIw\n\
+OTE3MDUGA1UEAwwuQ2lzY28gTWVyYWtpIERhc2hib2FyZCBPcmdhbml6YXRpb24g\n\
+Tm8uIEFCMDAwMTAgFw0yNjExMTcxMDU0MDBaGA8yMTAzMDcxNzEwNTQwMFowGTEX\n\
+MBUGA1UEAwwOUTAwMC0wMDAwLTAwMDEwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNC\n\
+AATbdbsS9czyrYcEdtv2ZnZg8/CTPuweEwPOgyXyEJwgpTA7ojwX2X7PIGiB9RQ3\n\
+/lHROCoFuAydLqSaNy/jR3z2o0IwQDAdBgNVHQ4EFgQUCGDeVJj0j/95AEBIxEvR\n\
+8g8oY2gwHwYDVR0jBBgwFoAUuucrbVgfaIj2zDRUo1cZG2l+NAIwCgYIKoZIzj0E\n\
+AwIDSAAwRQIhAPc0nK7cbZwm8X22c4SpOv7DTilAphwDzMR6uMwIJ8NrAiBCg2BW\n\
+/J6u93b9zOcJ2HIXNkW6aVhTjCzF0hcdN+jFTQ==\n\
+-----END CERTIFICATE-----");
+
+    /* /CN=Q000-0000-0001 issued by /CN=Cisco Meraki Dashboard Organization No. AB0002 (fictitious) */
+    X509 *certissuedother = getcert("-----BEGIN CERTIFICATE-----\n\
+MIIBmTCCAT6gAwIBAgIUZnDAdXpLsDqZWVfL+RPmA8cGhoswCgYIKoZIzj0EAwIw\n\
+OTE3MDUGA1UEAwwuQ2lzY28gTWVyYWtpIERhc2hib2FyZCBPcmdhbml6YXRpb24g\n\
+Tm8uIEFCMDAwMjAgFw0yNjExMTcxMDU0MDBaGA8yMTAzMDcxNzEwNTQwMFowGTEX\n\
+MBUGA1UEAwwOUTAwMC0wMDAwLTAwMDEwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNC\n\
+AARjFvtf1Q/SSaUgVOOYdE036qsxa/ZVp/M4OJHOi3RVLiUDERubF6WpC4Mj2jwp\n\
+IjNnp4wyPSMBYeRQeY8ej9Uco0IwQDAdBgNVHQ4EFgQUNIHgIWBH3QGVZ5MkHQ3O\n\
+s/XZh04wHwYDVR0jBBgwFoAUDi0W562QQdk2Fo+M2sGUEFBkpLAwCgYIKoZIzj0E\n\
+AwIDSQAwRgIhAK8SRJkyYr1BeGO50xbra0MeKF03OR0qWxQGwYxl+xy4AiEA+rcM\n\
+KxHHq5UmoiIaYZpbPuwU9RCqARM5TAjV7O9ixek=\n\
+-----END CERTIFICATE-----");
+
+    /* /CN=ap-multi issued by /C=US/O=Example Corp/OU=RadSec/CN=Example Issuing CA */
+    X509 *certissuedmulti = getcert("-----BEGIN CERTIFICATE-----\n\
+MIIBqzCCAVGgAwIBAgIUSDPvK2WiE/gn+3sQ2PunSkmp24QwCgYIKoZIzj0EAwIw\n\
+UjELMAkGA1UEBhMCVVMxFTATBgNVBAoMDEV4YW1wbGUgQ29ycDEPMA0GA1UECwwG\n\
+UmFkU2VjMRswGQYDVQQDDBJFeGFtcGxlIElzc3VpbmcgQ0EwIBcNMjYxMTE2MTY0\n\
+NzQ2WhgPMjEwMzA3MTYxNjQ3NDZaMBMxETAPBgNVBAMMCGFwLW11bHRpMFkwEwYH\n\
+KoZIzj0CAQYIKoZIzj0DAQcDQgAEw/4fZ0EBATAkS3BpjNJH2+4iij1Fswrl6bIH\n\
+Bs6DAJXzZr+wilykG0aMfOrzbTvwEg+fIo3YnjTHvdn1q9fcRqNCMEAwHQYDVR0O\n\
+BBYEFA9/TMPaFewt02yRHJhkQi8CVswCMB8GA1UdIwQYMBaAFHglsJjORxbWT1DV\n\
+JgNSxIwT6P95MAoGCCqGSM49BAMCA0gAMEUCIEHJLgSO6k31qK7kMzn4JXo7zW+/\n\
++1cW63/tte/qR2JUAiEA3F6SnxkyHSW8EIXiwPMMZoaj2+fC6G5iGqtMTZwzJgM=\n\
+-----END CERTIFICATE-----");
+
     /* test explicit CN regex */
     {
         conf.name = "test";
@@ -535,6 +574,64 @@ Djxuj56ZZL9t3+OVveS6\n\
         ok(0, verifyconfcert(certsimpleother, &conf, NULL, NULL), "negative explicit cn regex");
         ok(1, verifyconfcert(certsandns, &conf, NULL, NULL), "explicit cn regex with SAN DNS");
 
+        freematchcertattr(&conf);
+    }
+
+    /* test issuer CN regex */
+    {
+        conf.name = "test";
+        conf.certnamecheck = 0;
+
+        ok(1, addmatchcertattr(&conf, "Issuer:CN:/^Cisco Meraki Dashboard Organization No\\. AB0001$/"), "issuer cn regex config");
+
+        ok(1, verifyconfcert(certissued, &conf, NULL, NULL), "issuer cn regex");
+        ok(0, verifyconfcert(certissuedother, &conf, NULL, NULL), "negative issuer cn regex, other issuer");
+        ok(0, verifyconfcert(certsimple, &conf, NULL, NULL), "negative issuer cn regex, self-signed");
+
+        freematchcertattr(&conf);
+
+        ok(1, addmatchcertattr(&conf, "Issuer:CN:/t..t/"), "issuer cn regex config self-signed");
+        ok(1, verifyconfcert(certsimple, &conf, NULL, NULL), "issuer cn regex self-signed");
+        ok(0, verifyconfcert(certissued, &conf, NULL, NULL), "negative issuer cn regex, subject cn would match");
+        freematchcertattr(&conf);
+
+        /* the subject CN match must not look at the issuer */
+        ok(1, addmatchcertattr(&conf, "CN:/Cisco Meraki/"), "subject cn regex config for issuer value");
+        ok(0, verifyconfcert(certissued, &conf, NULL, NULL), "negative subject cn regex on issuer value");
+        freematchcertattr(&conf);
+    }
+
+    /* test issuer DN regex */
+    {
+        conf.name = "test";
+        conf.certnamecheck = 0;
+
+        ok(1, addmatchcertattr(&conf, "Issuer:/^CN=Cisco Meraki Dashboard Organization No\\. AB0001$/"), "issuer dn regex config");
+        ok(1, verifyconfcert(certissued, &conf, NULL, NULL), "issuer dn regex");
+        ok(0, verifyconfcert(certissuedother, &conf, NULL, NULL), "negative issuer dn regex");
+        freematchcertattr(&conf);
+
+        ok(1, addmatchcertattr(&conf, "Issuer:/^CN=Example Issuing CA,OU=RadSec,O=Example Corp,C=US$/"), "issuer dn regex config multi rdn");
+        ok(1, verifyconfcert(certissuedmulti, &conf, NULL, NULL), "issuer dn regex multi rdn");
+        ok(0, verifyconfcert(certissued, &conf, NULL, NULL), "negative issuer dn regex multi rdn");
+        freematchcertattr(&conf);
+
+        ok(1, addmatchcertattr(&conf, "Issuer:/O=Example Corp/"), "issuer dn regex config partial");
+        ok(1, verifyconfcert(certissuedmulti, &conf, NULL, NULL), "issuer dn regex partial");
+        ok(0, verifyconfcert(certissued, &conf, NULL, NULL), "negative issuer dn regex partial");
+        freematchcertattr(&conf);
+
+        /* issuer and subject terms combine */
+        ok(1, addmatchcertattr(&conf, "Issuer:CN:/AB0001/"), "combined issuer config");
+        ok(1, addmatchcertattr(&conf, "CN:/^Q000-/"), "combined subject config");
+        ok(1, verifyconfcert(certissued, &conf, NULL, NULL), "combined issuer and subject");
+        ok(0, verifyconfcert(certissuedother, &conf, NULL, NULL), "negative combined, wrong issuer");
+        freematchcertattr(&conf);
+
+        ok(0, addmatchcertattr(&conf, "Issuer:"), "invalid issuer syntax empty");
+        ok(0, addmatchcertattr(&conf, "Issuer:OU:/x/"), "invalid issuer syntax field");
+        ok(0, addmatchcertattr(&conf, "Issuer:CN:x"), "invalid issuer syntax regex");
+        ok(0, addmatchcertattr(&conf, "Issuers:/x/"), "invalid issuer syntax keyword");
         freematchcertattr(&conf);
     }
 

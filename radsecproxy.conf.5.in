@@ -488,10 +488,23 @@ is off. Default off.
 \fBMatchCertificateAttribute \fRSubjectAltName:rID:\fIoid\fR
 .br
 \fBMatchCertificateAttribute \fRSubjectAltName:otherName:\fIoid\fR:/\fIregexp\fR/
+.br
+\fBMatchCertificateAttribute \fRIssuer:CN:/\fIregexp\fR/
+.br
+\fBMatchCertificateAttribute \fRIssuer:/\fIregexp\fR/
 .RS
 Perform additional validation of certificate attributes. Currently matching
-of CN and SubjectAltName types URI, DNS, IP, rID, and otherName is supported. If specified
-multiple times, all terms must match for the certificate to be considered valid.
+of CN, SubjectAltName types URI, DNS, IP, rID, and otherName, and the issuer is supported.
+If specified multiple times, all terms must match for the certificate to be considered valid.
+.br
+\fBIssuer:CN\fR matches any commonName of the issuer; \fBIssuer\fR without a field
+matches the whole issuer distinguished name in RFC 2253 form, most specific component
+first, e.g. \fICN=Some CA,O=Some Org,C=CH\fR. Regular expressions are case insensitive;
+quote the whole value if the expression contains spaces.
+Matching on the issuer selects a client block by the CA that signed the certificate,
+for example when several tenants each have their own CA in the same trust store and
+their certificates carry nothing else that tells them apart. A certificate whose issuer
+matches no client block is rejected.
 .RE
 
 .BI "PSKkey " key

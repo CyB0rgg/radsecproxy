@@ -52,6 +52,11 @@ static struct hash *selfiecache = NULL;
 int RSP_EX_DATA_CONFIG;
 int RSP_EX_DATA_CONFIG_LIST;
 
+/* certattrmatch.type is a GEN_* subjectAltName type, or one of these for fields outside the SAN */
+#define CERTATTR_SUBJECT_CN -1
+#define CERTATTR_ISSUER_CN -2
+#define CERTATTR_ISSUER_DN -3
+
 struct certattrmatch {
     int (*matchfn)(GENERAL_NAME *, struct certattrmatch *);
     int type;
@@ -955,19 +960,19 @@ static int certattr_matchwildcard(GENERAL_NAME *gn, struct certattrmatch *match)
     return ret;
 }
 
-static int certattr_matchcn(X509 *cert, struct certattrmatch *match) {
-    int loc;
+/* match the regex against every commonName entry of a subject or issuer name */
 #if OPENSSL_VERSION_NUMBER >= 0x30000000
-    const X509_NAME *nm;
+static int certattr_matchnamecn(const X509_NAME *nm, struct certattrmatch *match) {
+    int loc;
     const X509_NAME_ENTRY *e;
     const ASN1_STRING *t;
 #else
-    X509_NAME *nm;
+static int certattr_matchnamecn(X509_NAME *nm, struct certattrmatch *match) {
+    int loc;
     X509_NAME_ENTRY *e;
     ASN1_STRING *t;
 #endif
 
-    nm = X509_get_subject_name(cert);
     loc = -1;
     for (;;) {
         loc = X509_NAME_get_index_by_NID(nm, NID_commonName, loc);
@@ -982,6 +987,36 @@ static int certattr_matchcn(X509 *cert, struct certattrmatch *match) {
     return 0;
 }
 
+static int certattr_matchcn(X509 *cert, struct certattrmatch *match) {
+    return certattr_matchnamecn(X509_get_subject_name(cert), match);
+}
+
+static int certattr_matchissuercn(X509 *cert, struct certattrmatch *match) {
+    char *dn;
+
+    if (certattr_matchnamecn(X509_get_issuer_name(cert), match))
+        return 1;
+    dn = print_x509_name(X509_get_issuer_name(cert));
+    debug(DBG_DBG, "certattr_matchissuercn: issuer %s not matching", dn ? dn : "?");
+    free(dn);
+    return 0;
+}
+
+/* match the regex against the issuer DN in RFC 2253 form, e.g. CN=Some CA,O=Some Org,C=CH */
+static int certattr_matchissuerdn(X509 *cert, struct certattrmatch *match) {
+    char *dn;
+    int r;
+
+    dn = print_x509_name(X509_get_issuer_name(cert));
+    if (!dn)
+        return 0;
+    r = _general_name_regex_match(dn, strlen(dn), match);
+    if (!r)
+        debug(DBG_DBG, "certattr_matchissuerdn: issuer %s not matching", dn);
+    free(dn);
+    return r;
+}
+
 /* returns
    1 if expected type is present and matches
    0 if expected type is not present
@@ -992,9 +1027,13 @@ static int matchsubjaltname(X509 *cert, struct certattrmatch *match) {
     char *fail = NULL, *tmp, *s;
     STACK_OF(GENERAL_NAME) * alt;
 
-    /*special case: don't search in SAN, but CN field in subject */
-    if (match->type == -1)
+    /*special cases: don't search in SAN, but fields of the subject or issuer */
+    if (match->type == CERTATTR_SUBJECT_CN)
         return certattr_matchcn(cert, match);
+    if (match->type == CERTATTR_ISSUER_CN)
+        return certattr_matchissuercn(cert, match);
+    if (match->type == CERTATTR_ISSUER_DN)
+        return certattr_matchissuerdn(cert, match);
 
     loc = X509_get_ext_by_NID(cert, NID_subject_alt_name, -1);
     if (loc < 0)
@@ -1369,8 +1408,24 @@ int addmatchcertattr(struct clsrvconf *conf, const char *match) {
     if (strncasecmp(pos, "CN", colon - pos) == 0) {
         if (!(certattrmatch->regex = compileregex(colon + 1)))
             goto errexit;
-        certattrmatch->type = -1;
+        certattrmatch->type = CERTATTR_SUBJECT_CN;
         certattrmatch->matchfn = NULL; /*special case: don't search in SAN, but CN field in subject */
+    } else if (colon - pos == 6 && strncasecmp(pos, "Issuer", 6) == 0) {
+        /* Issuer:/regex/ matches the issuer DN, Issuer:CN:/regex/ a commonName of the issuer */
+        pos = colon + 1;
+        certattrmatch->matchfn = NULL;
+        if (*pos == '/') {
+            if (!(certattrmatch->regex = compileregex(pos)))
+                goto errexit;
+            certattrmatch->type = CERTATTR_ISSUER_DN;
+        } else {
+            colon = strchr(pos, ':');
+            if (!colon || colon - pos != 2 || strncasecmp(pos, "CN", 2) != 0)
+                goto errexit;
+            if (!(certattrmatch->regex = compileregex(colon + 1)))
+                goto errexit;
+            certattrmatch->type = CERTATTR_ISSUER_CN;
+        }
     } else if (strncasecmp(pos, "SubjectAltName", colon - pos) == 0) {
         pos = colon + 1;
         colon = strchr(pos, ':');
