@@ -10,6 +10,8 @@ unreleased changes
 	- Session binding for reverse CoA routing
 	- Optional fallback of client CoA to the reverse CoA routes (reverseCoAFallback)
 	- Dynamic discovery of 3GPP realms via pub.3gppnetwork.org (DynamicLookup3GPPPublic)
+	- MatchCertificateAttribute Issuer:CN:/regex/ and Issuer:/regex/ to match on the
+	  certificate's issuer, e.g. to select a client block by the signing CA
 
 	Misc:
 	- Prevent TLS connections to self
