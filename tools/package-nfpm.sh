@@ -1,21 +1,21 @@
 #!/bin/sh
-# Build a .deb or .rpm of a built radsecproxy tree with nfpm, for the reverse-coa-poc builds.
+# Build a .deb or .rpm of a built radsecproxy tree with nfpm, for the iw-fleet builds.
 # usage: tools/package-nfpm.sh deb|rpm   (run from the top of a built source tree; nfpm in PATH)
 #
 # The package version sorts below upstream's eventual 1.12.0, so a distribution package
 # replaces this one on upgrade:
-#   deb  1.12.0~poc.<date>+g<commit>
-#   rpm  1.12.0, release 0.poc.<date>.g<commit>
-# <date> is the reverse-coa-poc-<date> tag when building from one, else today (UTC).
+#   deb  1.12.0~fleet.<date>+g<commit>
+#   rpm  1.12.0, release 0.fleet.<date>.g<commit>
+# <date> is the iw-fleet-<date> tag when building from one, else today (UTC).
 set -eu
 fmt=${1:?deb or rpm}
 commit=$(git rev-parse --short HEAD 2>/dev/null || cut -c1-7 .commit 2>/dev/null || echo unknown)
-tag=$(git describe --tags --exact-match --match 'reverse-coa-poc-*' 2>/dev/null || true)
-date=${tag#reverse-coa-poc-}
+tag=$(git describe --tags --exact-match --match 'iw-fleet-*' 2>/dev/null || true)
+date=${tag#iw-fleet-}
 [ -n "$tag" ] || date=$(date -u +%Y%m%d)
 case "$fmt" in
-    deb) PKG_VERSION="1.12.0~poc.${date}+g${commit}"; PKG_RELEASE="" ;;
-    rpm) PKG_VERSION="1.12.0"; PKG_RELEASE="0.poc.${date}.g${commit}" ;;
+    deb) PKG_VERSION="1.12.0~fleet.${date}+g${commit}"; PKG_RELEASE="" ;;
+    rpm) PKG_VERSION="1.12.0"; PKG_RELEASE="0.fleet.${date}.g${commit}" ;;
     *) echo "usage: $0 deb|rpm" >&2; exit 2 ;;
 esac
 STAGE=$(pwd)/dist/stage
@@ -28,9 +28,9 @@ cp -r docs/testing/. "$STAGE/doc/testing/"
 cp README.md LICENSE "$STAGE/doc/"
 find "$STAGE" -name '._*' -delete
 {
-    echo "radsecproxy reverse-coa-poc build"
+    echo "radsecproxy iw-fleet build"
     echo "commit:    $(git rev-parse HEAD 2>/dev/null || cat .commit 2>/dev/null || echo unknown)"
-    echo "branch:    reverse-coa-poc (upstream PRs #206 and #186, the fleet fix from reverse-coa-fleet, plus examples, docs and tools)"
+    echo "branch:    iw-fleet (upstream master + the reverse CoA series of PRs #206 and #186 + dyndisc-3gpp + issuer-match, with examples, docs and tools)"
     echo "built:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "package:   ${fmt} ${PKG_VERSION}${PKG_RELEASE:+-$PKG_RELEASE} x86_64"
     echo "openssl:   $(openssl version 2>/dev/null || echo unknown)"

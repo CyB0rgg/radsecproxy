@@ -1,7 +1,7 @@
-# radsecproxy reverse-coa-poc image.
+# radsecproxy iw-fleet image.
 #   docker run --rm -v /path/to/radsecproxy.conf:/etc/radsecproxy/radsecproxy.conf:ro \
 #       -v /path/to/certs:/etc/radsecproxy/certs:ro -p 2083:2083 \
-#       ghcr.io/cyb0rgg/radsecproxy:reverse-coa-poc
+#       ghcr.io/cyb0rgg/radsecproxy:iw-fleet
 # The config, certificates and keys are mounted; nothing is baked in. Examples are in
 # /usr/share/doc/radsecproxy/examples/reverse-coa/ inside the image.
 FROM debian:bookworm-slim AS build
@@ -18,15 +18,15 @@ RUN autoreconf -fi && ./configure --prefix=/usr --sysconfdir=/etc/radsecproxy --
     && cp -r docs/testing /out/usr/share/doc/radsecproxy/ \
     && cp README.md LICENSE /out/usr/share/doc/radsecproxy/ \
     && cp tools/coaprobe.py /out/usr/share/radsecproxy/ \
-    && printf 'radsecproxy reverse-coa-poc image\ncommit:    %s\nbuilt:     %s\n' "${COMMIT}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /out/usr/share/doc/radsecproxy/BUILD.txt
+    && printf 'radsecproxy iw-fleet image\ncommit:    %s\nbuilt:     %s\n' "${COMMIT}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /out/usr/share/doc/radsecproxy/BUILD.txt
 
 FROM debian:bookworm-slim
 ARG COMMIT=unknown
 LABEL org.opencontainers.image.title="radsecproxy, reverse CoA proof of concept" \
-      org.opencontainers.image.description="radsecproxy with reverse CoA (upstream PRs #206 and #186 plus the fleet commit), built from the reverse-coa-poc branch for evaluation. Config, certificates and keys are mounted under /etc/radsecproxy/." \
+      org.opencontainers.image.description="radsecproxy with reverse CoA (upstream master, the reverse CoA series of PRs #206 and #186, dyndisc-3gpp and issuer-match), built from the iw-fleet branch for fleet deployment. Config, certificates and keys are mounted under /etc/radsecproxy/." \
       org.opencontainers.image.source="https://github.com/CyB0rgg/radsecproxy" \
-      org.opencontainers.image.url="https://github.com/CyB0rgg/radsecproxy/tree/reverse-coa-poc" \
-      org.opencontainers.image.documentation="https://github.com/CyB0rgg/radsecproxy/blob/reverse-coa-poc/README.md" \
+      org.opencontainers.image.url="https://github.com/CyB0rgg/radsecproxy/tree/iw-fleet" \
+      org.opencontainers.image.documentation="https://github.com/CyB0rgg/radsecproxy/blob/iw-fleet/README.md" \
       org.opencontainers.image.revision="${COMMIT}" \
       org.opencontainers.image.licenses="BSD-3-Clause"
 RUN apt-get update && apt-get install -y --no-install-recommends libssl3 ca-certificates python3 \

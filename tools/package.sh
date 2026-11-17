@@ -1,10 +1,10 @@
 #!/bin/sh
-# Package a built radsecproxy tree into a tarball for the reverse-coa-poc builds.
+# Package a built radsecproxy tree into a tarball for the iw-fleet builds.
 # usage: tools/package.sh <label>   (run from the top of a built source tree)
 set -eu
 label=${1:?label, e.g. ubuntu22.04}
 commit=$(git rev-parse --short HEAD 2>/dev/null || cut -c1-7 .commit 2>/dev/null || echo unknown)
-name="radsecproxy-reverse-coa-poc-${commit}-${label}-x86_64"
+name="radsecproxy-iw-fleet-${commit}-${label}-x86_64"
 out="dist/${name}"
 rm -rf dist && mkdir -p "$out/bin" "$out/man/man5" "$out/man/man8" "$out/examples" "$out/docs"
 cp radsecproxy radsecproxy-hash "$out/bin/"
@@ -17,9 +17,9 @@ cp tools/coaprobe.py "$out/bin/"
 cp LICENSE "$out/"
 find "$out" -name '._*' -delete
 {
-    echo "radsecproxy reverse-coa-poc build"
+    echo "radsecproxy iw-fleet build"
     echo "commit:    $(git rev-parse HEAD 2>/dev/null || cat .commit 2>/dev/null || echo unknown)"
-    echo "branch:    reverse-coa-poc (upstream PRs #206 and #186, the fleet fix from reverse-coa-fleet, plus examples, docs and tools)"
+    echo "branch:    iw-fleet (upstream master + the reverse CoA series of PRs #206 and #186 + dyndisc-3gpp + issuer-match, with examples, docs and tools)"
     echo "built:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "host:      ${label} x86_64"
     echo "openssl:   $(openssl version 2>/dev/null || echo unknown)"
