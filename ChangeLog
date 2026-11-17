@@ -9,6 +9,7 @@ unreleased changes
 	- Reach idle udp clients for reverse CoA from their client block
 	- Session binding for reverse CoA routing
 	- Optional fallback of client CoA to the reverse CoA routes (reverseCoAFallback)
+	- Dynamic discovery of 3GPP realms via pub.3gppnetwork.org (DynamicLookup3GPPPublic)
 
 	Misc:
 	- Prevent TLS connections to self
@@ -20,6 +21,8 @@ unreleased changes
 
 	Bug Fixes:
 	- Fix failing authenticator validation (race condition) closes TLS connection (#208)
+	- Fix dynamic discovery to honour NAPTR order and preference and use every
+	  matching record (RFC 7585)
 
 2026-11-13 1.11.5
 	Bug Fixes:
