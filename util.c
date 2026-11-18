@@ -100,6 +100,23 @@ void printfchars(char *prefixfmt, char *prefix, char *charfmt, uint8_t *chars, i
     printf("\n");
 }
 
+/* log a buffer as one hex string at the given debug level, for wire-level debugging */
+void debughex(uint8_t level, const char *prefix, const uint8_t *buf, int len) {
+    char *hex;
+    int i;
+
+    if (!buf || len < 0 || len > 65535)
+        return;
+    hex = malloc((size_t)len * 2 + 1);
+    if (!hex)
+        return;
+    for (i = 0; i < len; i++)
+        sprintf(hex + i * 2, "%02x", buf[i]);
+    hex[len * 2] = '\0';
+    debug(level, "%s (%d bytes): %s", prefix, len, hex);
+    free(hex);
+}
+
 void port_set(struct sockaddr *sa, uint16_t port) {
     switch (sa->sa_family) {
     case AF_INET:
