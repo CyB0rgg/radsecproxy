@@ -1464,13 +1464,22 @@ int radsrv(struct request *rq) {
     int ttlres, result;
     char tmp[INET6_ADDRSTRLEN];
     uint8_t rqauth[16], *rqauthp = NULL;
+    uint8_t *rawcopy = NULL;
+    int rawlen = 0;
 
     /* a reverse coa response is verified against the request we sent; one that answers
        nothing in flight (late, repeated, unsolicited) is dropped here, as a decode
        failure below would close a tls client's connection */
-    if (lookup_reverse_coa_rqauth(from, rq->buf, rq->buflen, rqauth))
+    if (lookup_reverse_coa_rqauth(from, rq->buf, rq->buflen, rqauth)) {
         rqauthp = rqauth;
-    else if (rq->buflen >= 2 && IS_COA_RESPONSE(rq->buf[0])) {
+        /* validation rewrites the authenticators in place; keep the bytes as received
+           so a failing response can be logged for debugging */
+        rawcopy = malloc(rq->buflen);
+        if (rawcopy) {
+            memcpy(rawcopy, rq->buf, rq->buflen);
+            rawlen = rq->buflen;
+        }
+    } else if (rq->buflen >= 2 && IS_COA_RESPONSE(rq->buf[0])) {
         debug_limit(DBG_INFO, "radsrv: %s (id %d) from %s (%s) answers no reverse coa request in flight, ignoring",
                     radmsgtype2string(rq->buf[0]), rq->buf[1], from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
         freerq(rq);
@@ -1481,6 +1490,15 @@ int radsrv(struct request *rq) {
     if (!msg) {
         debug_limit(DBG_NOTICE, "radsrv: message decode error (code %d, id %d ?) from %s (%s)",
                     rq->buf[0], rq->buf[1], from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
+        if (rqauthp) {
+            /* a reverse coa response that does not decode is discarded (rfc 5176 section 2.3);
+               the request in flight expires on its own, the connection stays up */
+            if (rawcopy)
+                debughex(DBG_DBG, "radsrv: reverse coa response as received", rawcopy, rawlen);
+            free(rawcopy);
+            freerq(rq);
+            return 1;
+        }
         radmsg_free(msg);
         freerq(rq);
         return 0;
@@ -1492,9 +1510,22 @@ int radsrv(struct request *rq) {
     switch (msg->authstate) {
     case RSP_RADMSG_INVALID:
     case RSP_RADMSG_MSGAUTH_INVALID:
-        debug_limit(DBG_WARN, "radsrv: invalid %s in %s (id %d) from server %s",
-                    RSP_RADMSG_MSGAUTH_INVALID ? "message-authenticator" : "request-authenticator",
+        debug_limit(DBG_WARN, "radsrv: invalid %s in %s (id %d) from %s (%s)",
+                    msg->authstate == RSP_RADMSG_MSGAUTH_INVALID ? "message-authenticator" : "response-authenticator",
                     radmsgtype2string(msg->code), msg->id, from->conf->name, addr2string(from->addr, tmp, sizeof(tmp)));
+        if (rqauthp) {
+            /* a reverse coa response failing validation is silently discarded (rfc 5176
+               section 2.3): the request in flight expires on its own and the client's
+               connection, which carries every other session on that nas, stays up */
+            if (rawcopy) {
+                debughex(DBG_DBG, "radsrv: reverse coa response as received", rawcopy, rawlen);
+                debughex(DBG_DBG, "radsrv: request authenticator it was verified against", rqauth, 16);
+            }
+            free(rawcopy);
+            radmsg_free(msg);
+            freerq(rq);
+            return 1;
+        }
         radmsg_free(msg);
         freerq(rq);
         return 0;
@@ -1504,10 +1535,12 @@ int radsrv(struct request *rq) {
     case RSP_RADMSG_AUTH_UNKNOWN:
     default:
         debug_limit(DBG_ERR, "radsrv: unknown/unhandled authenticator state, this is likely a bug!");
+        free(rawcopy);
         radmsg_free(msg);
         freerq(rq);
         return 0;
     }
+    free(rawcopy);
 
     rq->msg = msg;
     rq->rqid = msg->id;

@@ -1222,6 +1222,7 @@ static int send_coa_to_client(struct server *from_server, struct request *origin
 
     debug(DBG_INFO, "send_coa_to_client: forwarding %s (id %d -> %d) to client %s%s",
           radmsgtype2string(copy->code), msg->id, newid, to_client->conf->name, final_hop ? " (nas)" : "");
+    debughex(DBG_DBG, "send_coa_to_client: packet as sent", rq->replybuf, rq->replybuflen);
     if (sendreply(newrqref(rq)) < 1) {
         pthread_mutex_lock(&to_client->reverse_coa_lock);
         rq->plan = NULL; /* stays with the caller, which tries the next candidate */
